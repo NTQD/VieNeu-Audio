@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[oc]
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+.env
+
+# Generated output (audio/video/subtitles) and personal source content
+outputs/
+input.txt
+background_*.png
+thumbnail_*.png
