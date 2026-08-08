@@ -35,6 +35,17 @@ OUTPUT_DIR = os.path.join(project_root, "outputs")
 # (nhanh hơn nhiều trên Colab T4). Lô nhỏ hơn = lưu file thường xuyên hơn, ít
 # mất việc hơn nếu mất kết nối giữa chừng; lô lớn hơn = ít round-trip GPU hơn.
 BATCH_GROUP_SIZE = 8
+# Mặc định SDK là 1.2. Tăng nhẹ để giảm hiện tượng model tự lặp lại 1 cụm từ
+# (vd. "cao nhất tầng trời cao nhất tầng trời") khi sinh audio. THAM SỐ THỬ
+# NGHIỆM — v3 Turbo còn early access nên không đảm bảo hết lặp hoàn toàn;
+# nếu giọng đọc nghe cứng/mất tự nhiên hơn, hạ dần về gần 1.2.
+REPETITION_PENALTY = 1.3
+# Font phụ đề ép dùng trên Linux/Colab — nơi font "Arial" mặc định trong ASS
+# không tồn tại, khiến fontconfig có thể chọn nhầm 1 font thiếu dấu tiếng
+# Việt (chữ có dấu hiển thị thành ô vuông). Cần cài font này qua apt trong
+# notebook Colab (vd. `apt-get install -y fonts-noto` + `fc-cache -f`).
+# None trên Windows vì Arial thật đã có sẵn và hiển thị đúng dấu.
+LINUX_SUBTITLE_FONT = "Noto Sans"
 
 
 def detect_chapter_range(text):
@@ -195,7 +206,10 @@ def _render_chapter_audio(text_file_path, progress_cb=None):
         group = pending[i:i + BATCH_GROUP_SIZE]
         if progress_cb:
             progress_cb(done_count, total_chunks, f"render lô {i // BATCH_GROUP_SIZE + 1} ({len(group)} phần)")
-        wavs = engine.infer_batch(texts=[g["text"] for g in group], voice=selected_voice)
+        wavs = engine.infer_batch(
+            texts=[g["text"] for g in group], voice=selected_voice,
+            repetition_penalty=REPETITION_PENALTY,
+        )
         for part, audio in zip(group, wavs):
             engine.save(audio, part["path"])
             log += f"✅ {part['filename']} ({part['words']} từ)\n"
@@ -266,7 +280,8 @@ def _run_postprocess_core(text_file_path, bgm_path, bgm_volume, silence_dur, bg_
     if progress_cb: progress_cb(0.5, "đang render video (tự dò encoder)")
     log += "\n[3/3] RENDER VIDEO\n"
     out_mp4 = os.path.join(chapter_dir, f"{prefix}_video.mp4")
-    used_encoder = render_video(final_audio, bg_image_path, srt_path, out_mp4, font_size=font_size)
+    font_name = None if sys.platform == "win32" else LINUX_SUBTITLE_FONT
+    used_encoder = render_video(final_audio, bg_image_path, srt_path, out_mp4, font_size=font_size, font_name=font_name)
 
     if not os.path.isfile(out_mp4):
         raise RuntimeError("Lỗi render video. Kiểm tra log FFmpeg.")

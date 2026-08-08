@@ -43,7 +43,11 @@ def get_ffmpeg():
     raise FileNotFoundError("FFmpeg không tìm thấy.")
 
 def get_wav_files(chapter_dir):
-    files = [f for f in os.listdir(chapter_dir) if f.lower().endswith(".wav")]
+    """Lấy danh sách file .wav part (không lấy file merged/final) — nếu không
+    loại trừ, chạy lại hậu kỳ trên 1 chương đã có sẵn _merged.wav/_final.wav
+    từ lần trước sẽ ghép luôn file đó vào, gây trùng lặp nội dung."""
+    files = [f for f in os.listdir(chapter_dir)
+             if f.lower().endswith(".wav") and "_merged" not in f and "_final" not in f]
     files.sort(key=lambda x: [int(c) if c.isdigit() else c for c in re.split(r'(\d+)', x)])
     return [os.path.join(chapter_dir, f) for f in files]
 
