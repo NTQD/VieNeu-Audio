@@ -19,3 +19,8 @@ finetune/output/
 
 # Merged Models
 merged_models_cache/
+
+# Personal content assets (copyrighted source text / art, not project code)
+input.txt
+background_*.png
+thumbnail_*.png
