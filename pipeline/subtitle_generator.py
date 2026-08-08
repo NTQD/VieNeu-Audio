@@ -15,7 +15,8 @@ if current_dir not in sys.path:
 
 from text_splitter import split_text_for_tts
 
-sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 def get_wav_duration(wav_path):
     """Lấy duration (giây) của file .wav."""

@@ -21,7 +21,8 @@ from subtitle_generator import generate_srt
 from video_renderer import render_video
 
 
-sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 def main():
     parser = argparse.ArgumentParser(description="Tự động hoá: Audio Part -> Video Hoàn Chỉnh")

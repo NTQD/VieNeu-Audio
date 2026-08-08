@@ -14,7 +14,8 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.append(current_dir)
 
-sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 def get_ffmpeg():
     """Tìm đường dẫn FFmpeg với cơ chế tìm kiếm sâu trên Windows."""
