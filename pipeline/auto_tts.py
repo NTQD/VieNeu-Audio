@@ -54,6 +54,30 @@ def load_preset_voices():
         return gr.update(choices=["Không tìm thấy giọng nào"], value=None), "❌ Không tải được danh sách giọng."
     return gr.update(choices=choices, value=choices[0]), f"✅ Đã tải {len(choices)} giọng."
 
+def _voice_id_from_choice(choice):
+    if not choice or "(ID: " not in choice:
+        return None
+    return choice.split("(ID: ")[1][:-1]
+
+def _synthesize_sample(voice_data):
+    """Đọc thử SAMPLE_TEXT (số, đơn vị, tên riêng — để kiểm tra khả năng đọc
+    của giọng) bằng 1 voice bất kỳ. Dùng chung cho preview (chưa xác nhận,
+    Bước 1) và bản mẫu sau khi đã xác nhận (Bước 2)."""
+    engine = init_tts()
+    normalized = normalize_text_for_tts(SAMPLE_TEXT)
+    audio = engine.infer(text=normalized, voice=voice_data)
+    return (engine.sample_rate, audio)
+
+def preview_voice(choice):
+    """Nghe thử NGAY giọng đang chọn trong dropdown — không cần bấm Xác nhận
+    và không cần sang Bước 2 — để so sánh nhiều giọng liên tục tại chỗ."""
+    voice_id = _voice_id_from_choice(choice)
+    if not voice_id:
+        return None, "❌ Chưa chọn giọng để nghe thử."
+    engine = init_tts()
+    voice_data = engine.get_preset_voice(voice_id)
+    return _synthesize_sample(voice_data), f"✅ Đang đọc thử: {choice}"
+
 def select_preset_voice(choice):
     global selected_voice
     if not choice: return "❌ Chưa chọn giọng.", gr.update()
@@ -65,10 +89,7 @@ def select_preset_voice(choice):
 
 def generate_sample():
     if selected_voice is None: return None, "❌ Chưa chọn giọng đọc."
-    engine = init_tts()
-    normalized = normalize_text_for_tts(SAMPLE_TEXT)
-    audio = engine.infer(text=normalized, voice=selected_voice)
-    return (engine.sample_rate, audio), "✅ Đã tạo bản mẫu."
+    return _synthesize_sample(selected_voice), "✅ Đã tạo bản mẫu."
 
 
 def _chapter_dir_for(text_norm, source_path=None):
@@ -389,11 +410,18 @@ with gr.Blocks(title="VieNeu-TTS Auto Reader", theme=gr.themes.Soft()) as app:
             gr.Markdown("### Chọn giọng đọc từ danh sách preset")
             btn_load = gr.Button("📂 Tải danh sách giọng", variant="secondary")
             preset_dropdown = gr.Dropdown(label="Chọn giọng preset", choices=[], interactive=True)
-            btn_select_preset = gr.Button("✅ Xác nhận giọng", variant="primary")
             load_status = gr.Textbox(label="Trạng thái tải", interactive=False)
+
+            gr.Markdown("*Nghe thử giọng đang chọn ở trên bằng đoạn văn kiểm tra (số, đơn vị, tên riêng) — đổi giọng và bấm lại thoải mái, không cần Xác nhận trước.*")
+            btn_preview = gr.Button("🔊 Nghe thử giọng này", variant="secondary")
+            preview_audio = gr.Audio(label="Bản đọc thử", elem_id="voice1_preview_player")
+            preview_status = gr.Textbox(label="Trạng thái nghe thử", interactive=False)
+
+            btn_select_preset = gr.Button("✅ Xác nhận giọng", variant="primary")
             voice_status = gr.Textbox(label="Trạng thái chọn giọng", interactive=False)
 
             btn_load.click(fn=load_preset_voices, outputs=[preset_dropdown, load_status])
+            btn_preview.click(fn=preview_voice, inputs=preset_dropdown, outputs=[preview_audio, preview_status])
             btn_select_preset.click(fn=select_preset_voice, inputs=preset_dropdown, outputs=[voice_status, tabs])
 
         # ========== BƯỚC 2 ==========
