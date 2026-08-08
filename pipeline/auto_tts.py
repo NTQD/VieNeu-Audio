@@ -71,11 +71,24 @@ def generate_sample():
     return (engine.sample_rate, audio), "✅ Đã tạo bản mẫu."
 
 
-def _chapter_dir_for(text_norm):
-    """Suy ra (prefix, chapter_dir) từ text đã normalize, dùng chung cho mọi bước."""
+def _chapter_dir_for(text_norm, source_path=None):
+    """Suy ra (prefix, chapter_dir, chapter_num) từ text đã normalize, dùng chung cho mọi bước.
+
+    Khi KHÔNG tìm thấy "Chương N" / "Chapter N" trong text (chapter_num = None),
+    KHÔNG dùng chung 1 thư mục "part" tĩnh cho mọi file — làm vậy thì 2 chương
+    khác nhau không có tiêu đề sẽ bị ghi đè/trộn lẫn vào cùng thư mục, và với
+    cơ chế resume (bỏ qua file .wav đã có) thì chương thứ 2 còn có thể bị coi
+    nhầm là "đã render xong" bằng nội dung của chương thứ 1. Thay vào đó, dùng
+    tên file nguồn làm phần phân biệt.
+    """
     chapter_num = detect_chapter_range(text_norm)
-    prefix = f"C_{chapter_num}" if chapter_num else "part"
-    return prefix, os.path.join(OUTPUT_DIR, prefix)
+    if chapter_num:
+        prefix = f"C_{chapter_num}"
+    else:
+        base = os.path.splitext(os.path.basename(source_path))[0] if source_path else "unknown"
+        base = re.sub(r'[^\w\-]+', '_', base).strip('_') or "unknown"
+        prefix = f"part_{base}"
+    return prefix, os.path.join(OUTPUT_DIR, prefix), chapter_num
 
 def _is_chapter_complete(chapter_dir, prefix, want_video):
     """Chương coi là XONG nếu: có ảnh nền -> đã có video; không có ảnh nền ->
@@ -106,7 +119,7 @@ def _render_chapter_audio(text_file_path, progress_cb=None):
     text = normalize_text_for_tts(text)
     engine = init_tts()
 
-    prefix, chapter_dir = _chapter_dir_for(text)
+    prefix, chapter_dir, chapter_num = _chapter_dir_for(text, source_path=text_file_path)
     os.makedirs(chapter_dir, exist_ok=True)
 
     # Lưu text gốc vào thư mục chương để subtitle_generator dùng
@@ -139,6 +152,12 @@ def _render_chapter_audio(text_file_path, progress_cb=None):
 
     log = f"📖 Chương {prefix} — {total_chunks} phần"
     log += f" ({len(already_done)} đã render sẵn, bỏ qua)\n" if already_done else "\n"
+    if chapter_num is None:
+        log += (
+            f"⚠️ Không tìm thấy \"Chương N\" / \"Chapter N\" trong văn bản — "
+            f"dùng tên file làm thư mục ({prefix}) để tránh trộn lẫn với chương khác. "
+            f"Nên thêm tiêu đề chương vào đầu file nếu có thể.\n"
+        )
 
     done_count = len(already_done)
     # Render theo LÔ qua engine.infer_batch(): trên GPU các phần trong 1 lô
@@ -172,7 +191,7 @@ def _run_postprocess_core(text_file_path, bgm_path, bgm_volume, silence_dur, bg_
     with open(text_file_path, 'r', encoding='utf-8') as f:
         text = f.read()
     text = normalize_text_for_tts(text)
-    prefix, chapter_dir = _chapter_dir_for(text)
+    prefix, chapter_dir, _chapter_num = _chapter_dir_for(text, source_path=text_file_path)
 
     if not os.path.isdir(chapter_dir):
         raise RuntimeError(f"Thư mục chương không tồn tại: {chapter_dir}. Chưa render audio.")
@@ -233,23 +252,75 @@ def _process_chapter_e2e(text_file_path, bgm_path, bgm_volume, silence_dur, bg_i
     """Chạy trọn 1 chương: Bước 3 (render audio) nối liền Bước 4 (hậu kỳ + video),
     không cần thao tác tay giữa 2 bước. Tự bỏ qua nếu chương đã xong từ trước.
 
-    Trả về (prefix, log, video_path_or_None, da_bo_qua).
+    Trả về (prefix, log, video_path_or_None, da_bo_qua, khong_tim_thay_tieu_de_chuong).
     """
     with open(text_file_path, 'r', encoding='utf-8') as f:
         raw_text = f.read()
     text_norm = normalize_text_for_tts(raw_text)
-    prefix, chapter_dir = _chapter_dir_for(text_norm)
+    prefix, chapter_dir, chapter_num = _chapter_dir_for(text_norm, source_path=text_file_path)
+    no_heading = chapter_num is None
     want_video = bool(bg_image_path)
 
     if _is_chapter_complete(chapter_dir, prefix, want_video):
         existing = os.path.join(chapter_dir, f"{prefix}_video.mp4") if want_video else None
-        return prefix, f"⏭️ {prefix}: đã xử lý xong từ trước, bỏ qua.\n", existing, True
+        return prefix, f"⏭️ {prefix}: đã xử lý xong từ trước, bỏ qua.\n", existing, True, no_heading
 
     _, _, render_log, _, _ = _render_chapter_audio(text_file_path, progress_cb=render_cb)
     _, _, pp_log, video_path = _run_postprocess_core(
         text_file_path, bgm_path, bgm_volume, silence_dur, bg_image_path, font_size, progress_cb=pp_cb
     )
-    return prefix, render_log + "\n" + pp_log, video_path, False
+    return prefix, render_log + "\n" + pp_log, video_path, False, no_heading
+
+def scan_output_health():
+    """Quét toàn bộ outputs/ và báo cáo chương nào đang THIẾU file — để phát
+    hiện NGAY những chương dở dang (như sự cố chương 1990 trước đây: có audio
+    nhưng thiếu hẳn phụ đề/video vì hậu kỳ bị gián đoạn giữa chừng), thay vì
+    tình cờ phát hiện ra sau này. "Chưa có video" một mình KHÔNG bị tính là
+    lỗi (có thể do cố ý không dùng ảnh nền) — chỉ thiếu audio/phụ đề/text gốc
+    mới được coi là vấn đề thật sự.
+    """
+    if not os.path.isdir(OUTPUT_DIR):
+        return "⚠️ Chưa có thư mục outputs/ — chưa render chương nào."
+
+    rows = []
+    for name in sorted(os.listdir(OUTPUT_DIR)):
+        chapter_dir = os.path.join(OUTPUT_DIR, name)
+        if not os.path.isdir(chapter_dir):
+            continue
+        files = os.listdir(chapter_dir)
+        parts = [f for f in files if re.match(rf"^{re.escape(name)}_c\d+_p\d+\.wav$", f)]
+        has_txt = f"{name}.txt" in files
+        has_merged = f"{name}_merged.wav" in files
+        srt_path = os.path.join(chapter_dir, f"{name}_merged.srt")
+        has_srt = os.path.isfile(srt_path) and os.path.getsize(srt_path) > 0
+        video_path = os.path.join(chapter_dir, f"{name}_video.mp4")
+        has_video = os.path.isfile(video_path) and os.path.getsize(video_path) > 0
+
+        issues = []
+        if not parts:
+            issues.append("không có file audio nào")
+        if parts and not has_merged:
+            issues.append("chưa ghép audio (thiếu _merged.wav)")
+        if parts and not has_srt:
+            issues.append("thiếu phụ đề .srt — hậu kỳ có thể đã bị gián đoạn")
+        if not has_txt:
+            issues.append("thiếu text gốc .txt — không thể tạo lại phụ đề nếu cần")
+
+        rows.append((name, len(parts), has_video, issues))
+
+    if not rows:
+        return "⚠️ outputs/ chưa có chương nào."
+
+    bad = [r for r in rows if r[3]]
+    report = f"🩺 KIỂM TRA {len(rows)} CHƯƠNG trong outputs/\n"
+    report += f"✅ {len(rows) - len(bad)} chương ổn (đủ audio + phụ đề)\n"
+    if bad:
+        report += f"⚠️ {len(bad)} chương CÓ VẤN ĐỀ:\n"
+        for name, n_parts, has_video, issues in bad:
+            report += f"  • {name} ({n_parts} phần audio, {'có' if has_video else 'chưa có'} video): {', '.join(issues)}\n"
+    else:
+        report += "🎉 Không có chương nào thiếu file!\n"
+    return report
 
 def process_batch(input_files, bgm_file, bgm_volume, silence_dur, bg_image, font_size,
                    progress=gr.Progress(track_tqdm=False)):
@@ -269,7 +340,7 @@ def process_batch(input_files, bgm_file, bgm_volume, silence_dur, bg_image, font
     total_files = len(file_paths)
 
     full_log = f"🌙 BATCH: {total_files} file — chương đã xong sẽ tự động được bỏ qua.\n\n"
-    videos, n_done, n_skipped, n_failed = [], 0, 0, 0
+    videos, n_done, n_skipped, n_failed, n_no_heading = [], 0, 0, 0, 0
 
     for idx, fp in enumerate(file_paths):
         label = os.path.basename(fp)
@@ -283,13 +354,14 @@ def process_batch(input_files, bgm_file, bgm_volume, silence_dur, bg_image, font
 
         progress(idx / total_files, desc=f"[{idx+1}/{total_files}] Bắt đầu {label}...")
         try:
-            prefix, chap_log, video_path, skipped = _process_chapter_e2e(
+            prefix, chap_log, video_path, skipped, no_heading = _process_chapter_e2e(
                 fp, bgm_path, bgm_volume, silence_dur, img_path, font_size,
                 render_cb=render_cb, pp_cb=pp_cb,
             )
             full_log += f"=== {prefix} ({label}) ===\n{chap_log}\n"
             n_skipped += int(skipped)
             n_done += int(not skipped)
+            n_no_heading += int(no_heading)
             if video_path:
                 videos.append(video_path)
         except FileNotFoundError:
@@ -301,6 +373,9 @@ def process_batch(input_files, bgm_file, bgm_volume, silence_dur, bg_image, font
 
     progress(1.0, desc="Hoàn tất batch!")
     full_log += f"\n🎉 BATCH XONG: {n_done} chương mới, {n_skipped} bỏ qua (đã có sẵn), {n_failed} lỗi / tổng {total_files}."
+    if n_no_heading:
+        full_log += f"\n⚠️ {n_no_heading} file không có \"Chương N\"/\"Chapter N\" trong văn bản (xem chi tiết ở trên)."
+    full_log += "\n\n" + scan_output_health()
     return full_log, videos
 
 # ===== GIAO DIỆN GRADIO =====
@@ -401,6 +476,13 @@ with gr.Blocks(title="VieNeu-TTS Auto Reader", theme=gr.themes.Soft()) as app:
                 inputs=[batch_input_files, batch_bgm, batch_bgm_vol, batch_silence, batch_bg_image, batch_font],
                 outputs=[batch_log, batch_videos]
             )
+
+            gr.Markdown("---")
+            with gr.Accordion("🩺 Kiểm tra sức khoẻ toàn bộ outputs/ (chương nào đang thiếu file)", open=False):
+                gr.Markdown("*Quét lại mọi chương đã từng render — kể cả những chương KHÔNG có trong lần chạy batch này — để phát hiện chương còn thiếu audio/phụ đề (báo cáo này cũng tự chạy sau mỗi lần Batch ở trên).*")
+                btn_health = gr.Button("🩺 Kiểm tra ngay", variant="secondary")
+                health_report = gr.Textbox(label="Báo cáo", lines=12, interactive=False)
+                btn_health.click(fn=scan_output_health, outputs=[health_report])
 
 if __name__ == "__main__":
     app.launch()
