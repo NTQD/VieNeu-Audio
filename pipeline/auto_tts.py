@@ -24,6 +24,11 @@ selected_voice = None
 voice_list_cache = []
 
 SAMPLE_TEXT = "rộng thêm 71,173.2 m, tức là hơn 71 km chỉ số GDP tăng 8.02%; tốc độ là 1/1000 giây. hắn tên Elyudelin. Boss cấp Trụ Thần từ level 400-499. chỉ số 10^20"
+# Dùng ở Bước 2 (sau khi đã xác nhận giọng): câu dài, nhiều số/đơn vị/tên
+# riêng — kiểm tra kỹ khả năng đọc của giọng đã chọn trước khi render cả
+# chương. KHÔNG dùng ở Bước 1 vì quá dài, khiến việc nghe thử nhiều giọng
+# liên tục để so sánh bị chậm không cần thiết.
+PREVIEW_TEXT = "Xin chào, đây là giọng đọc thử để bạn tham khảo trước khi chọn."
 OUTPUT_DIR = os.path.join(project_root, "outputs")
 # Số phần (part) đưa vào engine.infer_batch() mỗi lần gọi. Trên GPU, các phần
 # trong 1 lô được gộp vào cùng forward pass thay vì chạy tuần tự từng phần
@@ -59,24 +64,26 @@ def _voice_id_from_choice(choice):
         return None
     return choice.split("(ID: ")[1][:-1]
 
-def _synthesize_sample(voice_data):
-    """Đọc thử SAMPLE_TEXT (số, đơn vị, tên riêng — để kiểm tra khả năng đọc
-    của giọng) bằng 1 voice bất kỳ. Dùng chung cho preview (chưa xác nhận,
-    Bước 1) và bản mẫu sau khi đã xác nhận (Bước 2)."""
+def _synthesize_sample(voice_data, text):
+    """Đọc `text` bằng 1 voice bất kỳ. Dùng chung cho preview nhanh ở Bước 1
+    (PREVIEW_TEXT, câu ngắn) và bản mẫu kiểm tra kỹ ở Bước 2 (SAMPLE_TEXT,
+    câu dài nhiều số/đơn vị/tên riêng)."""
     engine = init_tts()
-    normalized = normalize_text_for_tts(SAMPLE_TEXT)
+    normalized = normalize_text_for_tts(text)
     audio = engine.infer(text=normalized, voice=voice_data)
     return (engine.sample_rate, audio)
 
 def preview_voice(choice):
-    """Nghe thử NGAY giọng đang chọn trong dropdown — không cần bấm Xác nhận
-    và không cần sang Bước 2 — để so sánh nhiều giọng liên tục tại chỗ."""
+    """Nghe thử NGAY giọng đang chọn trong dropdown bằng 1 câu ngắn — không
+    cần bấm Xác nhận và không cần sang Bước 2 — để so sánh nhiều giọng liên
+    tục tại chỗ. Câu dài kiểm tra số/tên riêng dành riêng cho Bước 2, sau khi
+    đã chốt giọng, để không làm chậm việc lướt qua nhiều giọng ở đây."""
     voice_id = _voice_id_from_choice(choice)
     if not voice_id:
         return None, "❌ Chưa chọn giọng để nghe thử."
     engine = init_tts()
     voice_data = engine.get_preset_voice(voice_id)
-    return _synthesize_sample(voice_data), f"✅ Đang đọc thử: {choice}"
+    return _synthesize_sample(voice_data, PREVIEW_TEXT), f"✅ Đang đọc thử: {choice}"
 
 def select_preset_voice(choice):
     global selected_voice
@@ -89,7 +96,7 @@ def select_preset_voice(choice):
 
 def generate_sample():
     if selected_voice is None: return None, "❌ Chưa chọn giọng đọc."
-    return _synthesize_sample(selected_voice), "✅ Đã tạo bản mẫu."
+    return _synthesize_sample(selected_voice, SAMPLE_TEXT), "✅ Đã tạo bản mẫu."
 
 
 def _chapter_dir_for(text_norm, source_path=None):
@@ -412,7 +419,7 @@ with gr.Blocks(title="VieNeu-TTS Auto Reader", theme=gr.themes.Soft()) as app:
             preset_dropdown = gr.Dropdown(label="Chọn giọng preset", choices=[], interactive=True)
             load_status = gr.Textbox(label="Trạng thái tải", interactive=False)
 
-            gr.Markdown("*Nghe thử giọng đang chọn ở trên bằng đoạn văn kiểm tra (số, đơn vị, tên riêng) — đổi giọng và bấm lại thoải mái, không cần Xác nhận trước.*")
+            gr.Markdown("*Nghe thử nhanh giọng đang chọn ở trên bằng 1 câu ngắn — đổi giọng và bấm lại thoải mái để so sánh, không cần Xác nhận trước. Muốn kiểm tra kỹ khả năng đọc số/tên riêng, dùng \"Tạo bản mẫu\" ở Bước 2 sau khi đã xác nhận.*")
             btn_preview = gr.Button("🔊 Nghe thử giọng này", variant="secondary")
             preview_audio = gr.Audio(label="Bản đọc thử", elem_id="voice1_preview_player")
             preview_status = gr.Textbox(label="Trạng thái nghe thử", interactive=False)
