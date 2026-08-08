@@ -1,6 +1,6 @@
 """
 Make Video: Kịch bản tự động hóa 100% từ thư mục file .wav lẻ thành Video YouTube.
-Quy trình: Ghép Audio (có BGM) -> Tạo Subtitle -> Render Video QSV.
+Quy trình: Ghép Audio (có BGM) -> Tạo Subtitle -> Render Video (tự dò encoder).
 
 Dùng: uv run python make_video.py outputs/C_1846 background.png
        uv run python make_video.py outputs/C_1846 background.png --bgm bgm/ambient.mp3
@@ -32,7 +32,11 @@ def main():
     parser.add_argument("--silence", type=float, default=0.5, help="Khoảng lặng giữa các part (giây)")
     parser.add_argument("--text", default=None, help="Đường dẫn file text gốc (nếu không tự tìm được)")
     parser.add_argument("--font", type=int, default=24, help="Cỡ chữ phụ đề (mặc định: 24)")
-    
+    parser.add_argument(
+        "--encoder", default=None, choices=["h264_nvenc", "h264_qsv", "libx264"],
+        help="Ép dùng 1 encoder cụ thể thay vì tự dò (mặc định: tự dò NVENC -> QSV -> libx264)",
+    )
+
     args = parser.parse_args()
 
     if not os.path.isdir(args.chapter_dir):
@@ -74,13 +78,13 @@ def main():
         sys.exit(1)
 
     # BƯỚC 3: VIDEO RENDERING
-    print("\n[3/3] ĐANG RENDER VIDEO (INTEL QSV)...")
+    print("\n[3/3] ĐANG RENDER VIDEO...")
     out_mp4 = os.path.join(args.chapter_dir, f"{chapter_name}_video.mp4")
-    render_video(final_audio, args.image, srt_path, out_mp4, font_size=args.font)
+    used_encoder = render_video(final_audio, args.image, srt_path, out_mp4, font_size=args.font, encoder=args.encoder)
 
     print("=" * 50)
     print("🎉 QUY TRÌNH HOÀN TẤT THÀNH CÔNG!")
-    print(f"🎥 Video cuối: {os.path.abspath(out_mp4)}")
+    print(f"🎥 Video cuối: {os.path.abspath(out_mp4)} (encoder: {used_encoder})")
     print("=" * 50)
 
 if __name__ == "__main__":

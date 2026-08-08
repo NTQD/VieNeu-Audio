@@ -25,6 +25,11 @@ voice_list_cache = []
 
 SAMPLE_TEXT = "rộng thêm 71,173.2 m, tức là hơn 71 km chỉ số GDP tăng 8.02%; tốc độ là 1/1000 giây. hắn tên Elyudelin. Boss cấp Trụ Thần từ level 400-499. chỉ số 10^20"
 OUTPUT_DIR = os.path.join(project_root, "outputs")
+# Số phần (part) đưa vào engine.infer_batch() mỗi lần gọi. Trên GPU, các phần
+# trong 1 lô được gộp vào cùng forward pass thay vì chạy tuần tự từng phần
+# (nhanh hơn nhiều trên Colab T4). Lô nhỏ hơn = lưu file thường xuyên hơn, ít
+# mất việc hơn nếu mất kết nối giữa chừng; lô lớn hơn = ít round-trip GPU hơn.
+BATCH_GROUP_SIZE = 8
 
 
 def detect_chapter_range(text):
@@ -93,25 +98,44 @@ def process_chapter(input_file, progress=gr.Progress(track_tqdm=False)):
     if not chapter_texts:
         chapter_texts = [text]
 
-    generated_files = []
-    total_chunks = sum(len(split_text_for_tts(c, 250)) for c in chapter_texts)
-    log = f"📖 Chương {chapter_num or '???'} — {total_chunks} phần\n"
-    
-    global_idx = 0
+    # Liệt kê TOÀN BỘ các phần cần có trước, kèm đường dẫn file đích.
+    all_parts = []
     for c_idx, chap_text in enumerate(chapter_texts):
         chunks = split_text_for_tts(chap_text, 250)
         for p_idx, chunk in enumerate(chunks):
             filename = f"{prefix}_c{c_idx+1:02d}_p{p_idx+1:02d}.wav"
-            output_file = os.path.join(chapter_dir, filename)
-            word_count = len(chunk.split())
-            progress((global_idx, total_chunks), desc=f"Render {filename} ({word_count} từ)")
-            audio = engine.infer(text=chunk, voice=selected_voice)
-            engine.save(audio, output_file)
-            generated_files.append(os.path.abspath(output_file))
-            log += f"✅ {filename} ({word_count} từ)\n"
-            global_idx += 1
+            output_file = os.path.abspath(os.path.join(chapter_dir, filename))
+            all_parts.append({"filename": filename, "path": output_file, "text": chunk, "words": len(chunk.split())})
+
+    total_chunks = len(all_parts)
+
+    # Bỏ qua phần đã render sẵn (file .wav tồn tại và không rỗng) — quan trọng
+    # khi chạy trên Colab vì phiên có thể ngắt kết nối giữa chừng; không có
+    # bước này thì phải render lại từ đầu toàn bộ chương.
+    already_done = [p for p in all_parts if os.path.isfile(p["path"]) and os.path.getsize(p["path"]) > 0]
+    pending = [p for p in all_parts if p not in already_done]
+
+    log = f"📖 Chương {chapter_num or '???'} — {total_chunks} phần"
+    log += f" ({len(already_done)} đã render sẵn, bỏ qua)\n" if already_done else "\n"
+
+    done_count = len(already_done)
+    # Render theo LÔ qua engine.infer_batch(): trên GPU các phần trong 1 lô
+    # được gộp chung 1 forward pass (nhanh hơn nhiều so với gọi infer() tuần
+    # tự từng phần); trên CPU vẫn chạy đúng, chỉ là tuần tự bên trong SDK.
+    for i in range(0, len(pending), BATCH_GROUP_SIZE):
+        group = pending[i:i + BATCH_GROUP_SIZE]
+        progress(
+            (done_count, total_chunks),
+            desc=f"Render lô {i // BATCH_GROUP_SIZE + 1} ({len(group)} phần, batch GPU)",
+        )
+        wavs = engine.infer_batch(texts=[g["text"] for g in group], voice=selected_voice)
+        for part, audio in zip(group, wavs):
+            engine.save(audio, part["path"])
+            log += f"✅ {part['filename']} ({part['words']} từ)\n"
+            done_count += 1
 
     gc.collect()
+    generated_files = [p["path"] for p in all_parts]
     log += f"\n🎉 HOÀN TẤT! {total_chunks} file .wav"
     log += f"\n📂 {os.path.abspath(chapter_dir)}"
     return log, generated_files
@@ -184,15 +208,15 @@ def run_postprocess(input_file, bgm_file, bgm_volume, silence_dur, bg_image, fon
     if bg_image is None:
         return log + "\n⚠️ Chưa chọn ảnh nền → Dừng ở bước audio + subtitle.\nUpload ảnh nền để render video.", None
 
-    progress(0.5, desc="Đang render video (Intel QSV)...")
-    log += "\n[3/3] RENDER VIDEO (Intel QSV)\n"
+    progress(0.5, desc="Đang render video (tự dò encoder)...")
+    log += "\n[3/3] RENDER VIDEO\n"
     img_path = bg_image.name if hasattr(bg_image, 'name') else bg_image
     out_mp4 = os.path.join(chapter_dir, f"{prefix}_video.mp4")
-    render_video(final_audio, img_path, srt_path, out_mp4, font_size=font_size)
+    used_encoder = render_video(final_audio, img_path, srt_path, out_mp4, font_size=font_size)
 
     if os.path.isfile(out_mp4):
         size_mb = os.path.getsize(out_mp4) / (1024 * 1024)
-        log += f"✅ Video: {os.path.basename(out_mp4)} ({size_mb:.1f} MB)\n"
+        log += f"✅ Video: {os.path.basename(out_mp4)} ({size_mb:.1f} MB) — encoder: {used_encoder}\n"
         log += f"\n🎉 PIPELINE HOÀN TẤT!"
         progress(1.0, desc="Hoàn tất!")
         return log, out_mp4
