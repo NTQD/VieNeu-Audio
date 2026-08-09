@@ -92,12 +92,20 @@ def pick_video_encoder(ffmpeg, preferred=None):
     return "libx264"
 
 def render_video(audio_path, image_path, srt_path=None, output_path=None, font_size=20,
-                  encoder=None, fps=DEFAULT_FPS, font_name=None):
+                  encoder=None, fps=DEFAULT_FPS, font_name=None, burn_subtitles=True):
     """font_name: ép tên font cụ thể cho phụ đề (vd. "Noto Sans" trên Linux/
     Colab, nơi font mặc định "Arial" không tồn tại và fontconfig có thể chọn
     nhầm 1 font không có đủ dấu tiếng Việt -> chữ có dấu hiển thị thành ô
     vuông). Để None để giữ hành vi mặc định của hệ thống (vd. trên Windows,
-    nơi Arial thật sự có sẵn và đã hiển thị đúng)."""
+    nơi Arial thật sự có sẵn và đã hiển thị đúng).
+
+    burn_subtitles: True (mặc định) = ghi cứng phụ đề vào từng khung hình
+    (subtitles filter, chạy bằng CPU qua libass — đây là phần TỐN THỜI GIAN
+    NHẤT khi render, không liên quan gì đến encoder GPU/CPU). False = bỏ
+    hoàn toàn bước này, chỉ ghép ảnh nền + audio -> nhanh hơn NHIỀU (thường
+    chỉ còn vài chục giây thay vì nhiều phút), dùng khi bạn định tự upload
+    file .srt riêng lên YouTube (Video > Phụ đề) thay vì ghi cứng vào hình.
+    """
     ffmpeg = get_ffmpeg()
     if not output_path: output_path = os.path.splitext(audio_path)[0] + ".mp4"
     if not srt_path: srt_path = os.path.splitext(audio_path)[0] + ".srt"
@@ -105,15 +113,17 @@ def render_video(audio_path, image_path, srt_path=None, output_path=None, font_s
     chosen = pick_video_encoder(ffmpeg, preferred=encoder)
     encoder_args = _ENCODER_ARGS.get(chosen, _ENCODER_ARGS["libx264"])
 
-    style_parts = [f"FontSize={font_size}", "Alignment=2", "MarginV=30"]
-    if font_name:
-        style_parts.insert(0, f"FontName={font_name}")
-    force_style = ",".join(style_parts)
+    cmd = [ffmpeg, "-y", "-loop", "1", "-r", str(fps), "-i", image_path, "-i", audio_path]
 
-    clean_srt_path = srt_path.replace("\\", "/").replace(":", "\\:")
-    cmd = [
-        ffmpeg, "-y", "-loop", "1", "-r", str(fps), "-i", image_path, "-i", audio_path,
-        "-vf", f"subtitles='{clean_srt_path}':force_style='{force_style}'",
+    if burn_subtitles:
+        style_parts = [f"FontSize={font_size}", "Alignment=2", "MarginV=30"]
+        if font_name:
+            style_parts.insert(0, f"FontName={font_name}")
+        force_style = ",".join(style_parts)
+        clean_srt_path = srt_path.replace("\\", "/").replace(":", "\\:")
+        cmd += ["-vf", f"subtitles='{clean_srt_path}':force_style='{force_style}'"]
+
+    cmd += [
         "-c:v", chosen, *encoder_args,
         "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart",
         output_path
@@ -134,10 +144,15 @@ def main():
     )
     parser.add_argument("--fps", type=int, default=DEFAULT_FPS, help=f"FPS video (mặc định: {DEFAULT_FPS})")
     parser.add_argument("--font-name", default=None, help='Ép tên font phụ đề (vd: "Noto Sans" trên Linux)')
+    parser.add_argument(
+        "--no-burn-subtitles", action="store_true",
+        help="Không ghi cứng phụ đề vào video (nhanh hơn nhiều) — dùng file .srt riêng để upload lên YouTube",
+    )
     args = parser.parse_args()
     used = render_video(
         args.audio, args.image, args.srt, args.out, args.font,
         encoder=args.encoder, fps=args.fps, font_name=args.font_name,
+        burn_subtitles=not args.no_burn_subtitles,
     )
     print(f"✅ Encoder dùng: {used}")
 

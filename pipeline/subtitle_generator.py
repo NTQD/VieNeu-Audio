@@ -127,12 +127,20 @@ def generate_srt(chapter_dir, text_file=None, silence=0.5, max_chars=60):
             cursor = part_end + current_silence
             continue
 
-        line_dur = dur / len(sub_lines)
+        # Chia thời lượng của cả phần (dur) cho từng dòng phụ đề THEO TỈ LỆ
+        # SỐ KÝ TỰ, không chia đều — 1 dòng dài đọc lâu hơn 1 dòng ngắn, chia
+        # đều khiến dòng dài bị "chạy" trước lúc đọc xong và dòng ngắn bị giữ
+        # lại quá lâu, gây cảm giác phụ đề nhanh/chậm hơn giọng đọc thật.
+        # Đây vẫn là ước lượng theo độ dài chữ, không phải canh theo audio
+        # thật (forced alignment) nên không tuyệt đối chính xác.
+        total_chars = sum(len(l) for l in sub_lines) or 1
+        line_start = part_start
         for j, line in enumerate(sub_lines):
-            line_start = part_start + j * line_dur
-            line_end = part_start + (j + 1) * line_dur
+            seg_dur = dur * (len(line) / total_chars)
+            line_end = line_start + seg_dur
             srt_entries.append(f"{index}\n{format_ts(line_start)} --> {format_ts(line_end)}\n{line}\n")
             index += 1
+            line_start = line_end
 
         cursor = part_end + current_silence
 

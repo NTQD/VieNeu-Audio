@@ -2,6 +2,8 @@ import os
 import sys
 import re
 import gc
+import time
+import urllib.request
 import gradio as gr
 from concurrent.futures import ThreadPoolExecutor
 
@@ -46,6 +48,12 @@ REPETITION_PENALTY = 1.3
 # notebook Colab (vd. `apt-get install -y fonts-noto` + `fc-cache -f`).
 # None trên Windows vì Arial thật đã có sẵn và hiển thị đúng dấu.
 LINUX_SUBTITLE_FONT = "Noto Sans"
+
+# Audio mẫu Ngọc Huyền — ví dụ CHÍNH THỨC có sẵn trong kho VieNeu-TTS (dùng
+# để demo tính năng Voice Cloning: examples/main.py), tải trực tiếp từ repo
+# gốc thay vì tự đóng gói lại, và cache 1 lần sau khi tải.
+NGOC_HUYEN_URL = "https://raw.githubusercontent.com/pnnbao97/VieNeu-TTS/main/examples/audio_ref/example_ngoc_huyen.wav"
+NGOC_HUYEN_CACHE = os.path.join(project_root, ".voice_cache", "ngoc_huyen.wav")
 
 
 def detect_chapter_range(text):
@@ -108,6 +116,42 @@ def select_preset_voice(choice):
 def generate_sample():
     if selected_voice is None: return None, "❌ Chưa chọn giọng đọc."
     return _synthesize_sample(selected_voice, SAMPLE_TEXT), "✅ Đã tạo bản mẫu."
+
+
+def fetch_ngoc_huyen_sample():
+    """Tải audio mẫu Ngọc Huyền (ví dụ chính thức trong kho VieNeu-TTS) về
+    máy 1 lần rồi dùng lại từ cache, để điền sẵn vào ô audio mẫu cho Voice
+    Cloning bên dưới."""
+    try:
+        if not os.path.isfile(NGOC_HUYEN_CACHE):
+            os.makedirs(os.path.dirname(NGOC_HUYEN_CACHE), exist_ok=True)
+            urllib.request.urlretrieve(NGOC_HUYEN_URL, NGOC_HUYEN_CACHE)
+    except Exception as e:
+        return None, f"❌ Lỗi tải giọng mẫu Ngọc Huyền: {e}"
+    return NGOC_HUYEN_CACHE, "✅ Đã tải giọng mẫu Ngọc Huyền — bấm \"Nhân bản & Nghe thử\" bên dưới."
+
+def clone_and_preview(audio_path):
+    """Nhân bản giọng từ 1 audio mẫu 3-5 giây (v3 Turbo nhân bản trực tiếp
+    từ audio, không cần nhập nội dung) và đọc thử ngay bằng câu ngắn để
+    kiểm tra nhanh trước khi xác nhận dùng giọng này."""
+    if not audio_path or not os.path.isfile(audio_path):
+        return None, None, "❌ Chưa có audio mẫu để nhân bản."
+    engine = init_tts()
+    try:
+        speaker_emb, ref_codes = engine.encode_reference(audio_path, denoise=True)
+    except Exception as e:
+        return None, None, f"❌ Lỗi nhân bản giọng: {e}"
+    voice_data = {"speaker_emb": speaker_emb, "codes": ref_codes}
+    sample = _synthesize_sample(voice_data, PREVIEW_TEXT)
+    return voice_data, sample, "✅ Đã nhân bản giọng — nghe thử ở trên, bấm \"Xác nhận\" nếu ưng ý."
+
+def confirm_cloned_voice(cloned_voice):
+    global selected_voice
+    if cloned_voice is None:
+        return "❌ Chưa nhân bản giọng nào để xác nhận. Bấm \"Nhân bản & Nghe thử\" trước.", gr.update()
+    selected_voice = cloned_voice
+    gr.Info("✅ Đã xác nhận dùng giọng nhân bản.")
+    return "✅ Đã xác nhận dùng giọng nhân bản.", gr.Tabs(selected=1)
 
 
 def _chapter_dir_for(text_norm, source_path=None):
@@ -199,6 +243,7 @@ def _render_chapter_audio(text_file_path, progress_cb=None):
         )
 
     done_count = len(already_done)
+    t_render_start = time.time()
     # Render theo LÔ qua engine.infer_batch(): trên GPU các phần trong 1 lô
     # được gộp chung 1 forward pass (nhanh hơn nhiều so với gọi infer() tuần
     # tự từng phần); trên CPU vẫn chạy đúng, chỉ là tuần tự bên trong SDK.
@@ -214,16 +259,22 @@ def _render_chapter_audio(text_file_path, progress_cb=None):
             engine.save(audio, part["path"])
             log += f"✅ {part['filename']} ({part['words']} từ)\n"
             done_count += 1
+    render_elapsed = time.time() - t_render_start
 
     gc.collect()
     generated_files = [p["path"] for p in all_parts]
     log += f"🎉 Audio xong: {total_chunks} file .wav\n"
+    log += f"⏱️ Render audio: {render_elapsed:.1f}s ({len(pending)} phần mới)\n"
     return chapter_dir, prefix, log, generated_files, total_chunks
 
-def _run_postprocess_core(text_file_path, bgm_path, bgm_volume, silence_dur, bg_image_path, font_size, progress_cb=None):
+def _run_postprocess_core(text_file_path, bgm_path, bgm_volume, silence_dur, bg_image_path, font_size,
+                           progress_cb=None, burn_subtitles=True):
     """Bước 4: ghép audio -> trộn BGM (nếu có) -> tạo phụ đề -> render video (nếu có ảnh nền).
 
     progress_cb(fraction 0..1, desc), nếu có, được gọi ở mỗi giai đoạn.
+    burn_subtitles=False: bỏ qua bước ghi cứng phụ đề (nhanh hơn nhiều) —
+    vẫn tạo ra video (ảnh nền + audio) và file .srt riêng để tự upload lên
+    YouTube làm phụ đề (Video > Phụ đề) thay vì ghi cứng vào hình.
     Trả về (chapter_dir, prefix, log, video_path_or_None).
     """
     from audio_postprocess import get_ffmpeg, get_wav_files, concat_with_silence, mix_bgm
@@ -248,21 +299,24 @@ def _run_postprocess_core(text_file_path, bgm_path, bgm_volume, silence_dur, bg_
 
     if progress_cb: progress_cb(0.1, "đang ghép audio")
     log += "[1/3] GHÉP AUDIO\n"
+    t0 = time.time()
     merged_wav = os.path.join(chapter_dir, f"{prefix}_merged.wav")
     concat_with_silence(ffmpeg, wav_files, silence_dur, merged_wav)
-    log += f"✅ Ghép {len(wav_files)} file, silence={silence_dur}s\n"
+    log += f"✅ Ghép {len(wav_files)} file, silence={silence_dur}s — ⏱️ {time.time() - t0:.1f}s\n"
 
     final_audio = merged_wav
     if bgm_path and os.path.isfile(bgm_path):
         if progress_cb: progress_cb(0.25, "đang trộn nhạc nền")
         log += f"\n🎵 TRỘN BGM (volume: {bgm_volume})\n"
+        t0 = time.time()
         bgm_wav = os.path.join(chapter_dir, f"{prefix}_final.wav")
         mix_bgm(ffmpeg, merged_wav, bgm_path, bgm_wav, bgm_volume)
         final_audio = bgm_wav
-        log += "✅ Đã trộn nhạc nền\n"
+        log += f"✅ Đã trộn nhạc nền — ⏱️ {time.time() - t0:.1f}s\n"
 
     if progress_cb: progress_cb(0.4, "đang tạo phụ đề")
     log += "\n[2/3] TẠO PHỤ ĐỀ (từ text gốc)\n"
+    t0 = time.time()
     text_save_path = os.path.join(chapter_dir, f"{prefix}.txt")
     if not os.path.isfile(text_save_path):
         with open(text_save_path, "w", encoding="utf-8") as tf:
@@ -270,7 +324,7 @@ def _run_postprocess_core(text_file_path, bgm_path, bgm_volume, silence_dur, bg_
     srt_path = generate_srt(chapter_dir, text_save_path, silence_dur, max_chars=60)
     if not srt_path:
         raise RuntimeError("Lỗi tạo phụ đề.")
-    log += f"✅ Đã tạo: {os.path.basename(srt_path)}\n"
+    log += f"✅ Đã tạo: {os.path.basename(srt_path)} — ⏱️ {time.time() - t0:.1f}s\n"
 
     if not bg_image_path:
         log += "\n⚠️ Chưa có ảnh nền → dừng ở bước audio + subtitle (không tạo video).\n"
@@ -278,20 +332,26 @@ def _run_postprocess_core(text_file_path, bgm_path, bgm_volume, silence_dur, bg_
         return chapter_dir, prefix, log, None
 
     if progress_cb: progress_cb(0.5, "đang render video (tự dò encoder)")
-    log += "\n[3/3] RENDER VIDEO\n"
+    log += "\n[3/3] RENDER VIDEO" + (" (không ghi cứng phụ đề)" if not burn_subtitles else "") + "\n"
+    t0 = time.time()
     out_mp4 = os.path.join(chapter_dir, f"{prefix}_video.mp4")
     font_name = None if sys.platform == "win32" else LINUX_SUBTITLE_FONT
-    used_encoder = render_video(final_audio, bg_image_path, srt_path, out_mp4, font_size=font_size, font_name=font_name)
+    used_encoder = render_video(
+        final_audio, bg_image_path, srt_path, out_mp4, font_size=font_size,
+        font_name=font_name, burn_subtitles=burn_subtitles,
+    )
+    video_elapsed = time.time() - t0
 
     if not os.path.isfile(out_mp4):
         raise RuntimeError("Lỗi render video. Kiểm tra log FFmpeg.")
     size_mb = os.path.getsize(out_mp4) / (1024 * 1024)
     log += f"✅ Video: {os.path.basename(out_mp4)} ({size_mb:.1f} MB) — encoder: {used_encoder}\n"
+    log += f"⏱️ Render video{'' if burn_subtitles else ' (không ghi cứng phụ đề)'}: {video_elapsed:.1f}s\n"
     if progress_cb: progress_cb(1.0, "hoàn tất")
     return chapter_dir, prefix, log, out_mp4
 
 def _process_chapter_e2e(text_file_path, bgm_path, bgm_volume, silence_dur, bg_image_path, font_size,
-                          render_cb=None, pp_cb=None):
+                          render_cb=None, pp_cb=None, burn_subtitles=True):
     """Chạy trọn 1 chương: Bước 3 (render audio) nối liền Bước 4 (hậu kỳ + video),
     không cần thao tác tay giữa 2 bước. Tự bỏ qua nếu chương đã xong từ trước.
 
@@ -308,11 +368,15 @@ def _process_chapter_e2e(text_file_path, bgm_path, bgm_volume, silence_dur, bg_i
         existing = os.path.join(chapter_dir, f"{prefix}_video.mp4") if want_video else None
         return prefix, f"⏭️ {prefix}: đã xử lý xong từ trước, bỏ qua.\n", existing, True, no_heading
 
+    t_total = time.time()
     _, _, render_log, _, _ = _render_chapter_audio(text_file_path, progress_cb=render_cb)
     _, _, pp_log, video_path = _run_postprocess_core(
-        text_file_path, bgm_path, bgm_volume, silence_dur, bg_image_path, font_size, progress_cb=pp_cb
+        text_file_path, bgm_path, bgm_volume, silence_dur, bg_image_path, font_size,
+        progress_cb=pp_cb, burn_subtitles=burn_subtitles,
     )
-    return prefix, render_log + "\n" + pp_log, video_path, False, no_heading
+    total_elapsed = time.time() - t_total
+    log = render_log + "\n" + pp_log + f"\n⏱️ TỔNG THỜI GIAN CHƯƠNG: {total_elapsed:.1f}s\n"
+    return prefix, log, video_path, False, no_heading
 
 def scan_output_health():
     """Quét toàn bộ outputs/ và báo cáo chương nào đang THIẾU file — để phát
@@ -365,7 +429,7 @@ def scan_output_health():
         report += "🎉 Không có chương nào thiếu file!\n"
     return report
 
-def process_batch(input_files, bgm_file, bgm_volume, silence_dur, bg_image, font_size,
+def process_batch(input_files, bgm_file, bgm_volume, silence_dur, bg_image, font_size, burn_subtitles,
                    progress=gr.Progress(track_tqdm=False)):
     """Handler cho nút Batch: nhận nhiều file .txt, chạy Bước 3 -> Bước 4 liên tục
     cho từng chương, tự bỏ qua chương đã xong, và KHÔNG dừng cả batch nếu 1
@@ -384,6 +448,7 @@ def process_batch(input_files, bgm_file, bgm_volume, silence_dur, bg_image, font
 
     full_log = f"🌙 BATCH: {total_files} file — chương đã xong sẽ tự động được bỏ qua.\n\n"
     videos, n_done, n_skipped, n_failed, n_no_heading = [], 0, 0, 0, 0
+    t_batch = time.time()
 
     for idx, fp in enumerate(file_paths):
         label = os.path.basename(fp)
@@ -399,7 +464,7 @@ def process_batch(input_files, bgm_file, bgm_volume, silence_dur, bg_image, font
         try:
             prefix, chap_log, video_path, skipped, no_heading = _process_chapter_e2e(
                 fp, bgm_path, bgm_volume, silence_dur, img_path, font_size,
-                render_cb=render_cb, pp_cb=pp_cb,
+                render_cb=render_cb, pp_cb=pp_cb, burn_subtitles=burn_subtitles,
             )
             full_log += f"=== {prefix} ({label}) ===\n{chap_log}\n"
             n_skipped += int(skipped)
@@ -414,8 +479,10 @@ def process_batch(input_files, bgm_file, bgm_volume, silence_dur, bg_image, font
             n_failed += 1
             full_log += f"=== ❌ {label}: LỖI — {e} ===\n\n"
 
+    batch_elapsed = time.time() - t_batch
     progress(1.0, desc="Hoàn tất batch!")
     full_log += f"\n🎉 BATCH XONG: {n_done} chương mới, {n_skipped} bỏ qua (đã có sẵn), {n_failed} lỗi / tổng {total_files}."
+    full_log += f"\n⏱️ TỔNG THỜI GIAN BATCH: {batch_elapsed / 60:.1f} phút"
     if n_no_heading:
         full_log += f"\n⚠️ {n_no_heading} file không có \"Chương N\"/\"Chapter N\" trong văn bản (xem chi tiết ở trên)."
     full_log += "\n\n" + scan_output_health()
@@ -445,6 +512,35 @@ with gr.Blocks(title="VieNeu-TTS Auto Reader", theme=gr.themes.Soft()) as app:
             btn_load.click(fn=load_preset_voices, outputs=[preset_dropdown, load_status])
             btn_preview.click(fn=preview_voice, inputs=preset_dropdown, outputs=[preview_audio, preview_status])
             btn_select_preset.click(fn=select_preset_voice, inputs=preset_dropdown, outputs=[voice_status, tabs])
+
+            gr.Markdown("---")
+            with gr.Accordion("🦜 Hoặc: Nhân bản giọng từ audio mẫu (Voice Cloning)", open=False):
+                gr.Markdown(
+                    "Tải lên 3-5 giây audio mẫu của giọng bạn muốn dùng — v3 Turbo nhân bản "
+                    "trực tiếp từ audio, không cần nhập nội dung. Bạn cần có quyền sử dụng "
+                    "audio mẫu này (giọng của chính bạn, người đồng ý cho dùng, hoặc tài "
+                    "nguyên được cấp phép rõ ràng)."
+                )
+                clone_audio = gr.Audio(label="Audio mẫu (3-5 giây)", type="filepath")
+                btn_ngoc_huyen = gr.Button(
+                    "🎙️ Dùng giọng có sẵn: Ngọc Huyền (ví dụ chính thức từ VieNeu-TTS)",
+                    variant="secondary",
+                )
+                btn_clone_preview = gr.Button("🔊 Nhân bản & Nghe thử", variant="secondary")
+                clone_preview_audio = gr.Audio(label="Bản đọc thử (giọng nhân bản)", elem_id="clone_preview_player")
+                clone_status = gr.Textbox(label="Trạng thái", interactive=False)
+                btn_confirm_clone = gr.Button("✅ Xác nhận dùng giọng nhân bản này", variant="primary")
+
+                cloned_voice_state = gr.State(None)
+
+                btn_ngoc_huyen.click(fn=fetch_ngoc_huyen_sample, outputs=[clone_audio, clone_status])
+                btn_clone_preview.click(
+                    fn=clone_and_preview, inputs=[clone_audio],
+                    outputs=[cloned_voice_state, clone_preview_audio, clone_status],
+                )
+                btn_confirm_clone.click(
+                    fn=confirm_cloned_voice, inputs=[cloned_voice_state], outputs=[voice_status, tabs],
+                )
 
         # ========== BƯỚC 2 ==========
         with gr.Tab("② Nghe mẫu", id=1):
@@ -514,6 +610,10 @@ with gr.Blocks(title="VieNeu-TTS Auto Reader", theme=gr.themes.Soft()) as app:
                     batch_bgm_vol = gr.Slider(label="Âm lượng BGM", minimum=0.01, maximum=0.2, value=0.05, step=0.01)
                     batch_silence = gr.Slider(label="Khoảng lặng giữa các phần (giây)", minimum=0.1, maximum=3.0, value=0.5, step=0.1)
                     batch_font = gr.Slider(label="Cỡ chữ phụ đề", minimum=14, maximum=40, value=24, step=1)
+                    batch_burn_subs = gr.Checkbox(
+                        value=True, label="🔥 Ghi cứng phụ đề vào video",
+                        info="Tắt để render NHANH HƠN NHIỀU (bỏ qua bước tốn thời gian nhất) — dùng khi bạn tự upload file .srt riêng lên YouTube (Video > Phụ đề) thay vì ghi cứng vào hình.",
+                    )
 
             btn_batch = gr.Button("🌙 Chạy Batch: Audio → Video cho tất cả file", variant="primary", size="lg")
             batch_log = gr.Textbox(label="Nhật ký Batch", lines=20, interactive=False)
@@ -523,7 +623,7 @@ with gr.Blocks(title="VieNeu-TTS Auto Reader", theme=gr.themes.Soft()) as app:
 
             btn_batch.click(
                 fn=process_batch,
-                inputs=[batch_input_files, batch_bgm, batch_bgm_vol, batch_silence, batch_bg_image, batch_font],
+                inputs=[batch_input_files, batch_bgm, batch_bgm_vol, batch_silence, batch_bg_image, batch_font, batch_burn_subs],
                 outputs=[batch_log, batch_videos]
             )
 
