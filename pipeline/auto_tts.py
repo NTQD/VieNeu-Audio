@@ -2,15 +2,19 @@ import os
 import sys
 import re
 import gc
+import time
+import urllib.request
 import gradio as gr
 from concurrent.futures import ThreadPoolExecutor
 
-# Add this file's directory to sys.path so the local pipeline modules
-# (text_splitter, text_normalizer) resolve regardless of how the app is launched.
+# Thêm đường dẫn để import các module local và SDK
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
-if current_dir not in sys.path:
-    sys.path.append(current_dir)
+src_path = os.path.join(project_root, "src")
+
+for p in [current_dir, project_root, src_path]:
+    if p not in sys.path:
+        sys.path.append(p)
 
 from text_splitter import split_text_for_tts
 from text_normalizer import normalize_text_for_tts
@@ -22,7 +26,34 @@ selected_voice = None
 voice_list_cache = []
 
 SAMPLE_TEXT = "rộng thêm 71,173.2 m, tức là hơn 71 km chỉ số GDP tăng 8.02%; tốc độ là 1/1000 giây. hắn tên Elyudelin. Boss cấp Trụ Thần từ level 400-499. chỉ số 10^20"
+# Dùng ở Bước 2 (sau khi đã xác nhận giọng): câu dài, nhiều số/đơn vị/tên
+# riêng — kiểm tra kỹ khả năng đọc của giọng đã chọn trước khi render cả
+# chương. KHÔNG dùng ở Bước 1 vì quá dài, khiến việc nghe thử nhiều giọng
+# liên tục để so sánh bị chậm không cần thiết.
+PREVIEW_TEXT = "Xin chào, đây là giọng đọc thử để bạn tham khảo trước khi chọn."
 OUTPUT_DIR = os.path.join(project_root, "outputs")
+# Số phần (part) đưa vào engine.infer_batch() mỗi lần gọi. Trên GPU, các phần
+# trong 1 lô được gộp vào cùng forward pass thay vì chạy tuần tự từng phần
+# (nhanh hơn nhiều trên Colab T4). Lô nhỏ hơn = lưu file thường xuyên hơn, ít
+# mất việc hơn nếu mất kết nối giữa chừng; lô lớn hơn = ít round-trip GPU hơn.
+BATCH_GROUP_SIZE = 8
+# Mặc định SDK là 1.2. Tăng nhẹ để giảm hiện tượng model tự lặp lại 1 cụm từ
+# (vd. "cao nhất tầng trời cao nhất tầng trời") khi sinh audio. THAM SỐ THỬ
+# NGHIỆM — v3 Turbo còn early access nên không đảm bảo hết lặp hoàn toàn;
+# nếu giọng đọc nghe cứng/mất tự nhiên hơn, hạ dần về gần 1.2.
+REPETITION_PENALTY = 1.3
+# Font phụ đề ép dùng trên Linux/Colab — nơi font "Arial" mặc định trong ASS
+# không tồn tại, khiến fontconfig có thể chọn nhầm 1 font thiếu dấu tiếng
+# Việt (chữ có dấu hiển thị thành ô vuông). Cần cài font này qua apt trong
+# notebook Colab (vd. `apt-get install -y fonts-noto` + `fc-cache -f`).
+# None trên Windows vì Arial thật đã có sẵn và hiển thị đúng dấu.
+LINUX_SUBTITLE_FONT = "Noto Sans"
+
+# Audio mẫu Ngọc Huyền — ví dụ CHÍNH THỨC có sẵn trong kho VieNeu-TTS (dùng
+# để demo tính năng Voice Cloning: examples/main.py), tải trực tiếp từ repo
+# gốc thay vì tự đóng gói lại, và cache 1 lần sau khi tải.
+NGOC_HUYEN_URL = "https://raw.githubusercontent.com/pnnbao97/VieNeu-TTS/main/examples/audio_ref/example_ngoc_huyen.wav"
+NGOC_HUYEN_CACHE = os.path.join(project_root, ".voice_cache", "ngoc_huyen.wav")
 
 
 def detect_chapter_range(text):
@@ -47,6 +78,32 @@ def load_preset_voices():
         return gr.update(choices=["Không tìm thấy giọng nào"], value=None), "❌ Không tải được danh sách giọng."
     return gr.update(choices=choices, value=choices[0]), f"✅ Đã tải {len(choices)} giọng."
 
+def _voice_id_from_choice(choice):
+    if not choice or "(ID: " not in choice:
+        return None
+    return choice.split("(ID: ")[1][:-1]
+
+def _synthesize_sample(voice_data, text):
+    """Đọc `text` bằng 1 voice bất kỳ. Dùng chung cho preview nhanh ở Bước 1
+    (PREVIEW_TEXT, câu ngắn) và bản mẫu kiểm tra kỹ ở Bước 2 (SAMPLE_TEXT,
+    câu dài nhiều số/đơn vị/tên riêng)."""
+    engine = init_tts()
+    normalized = normalize_text_for_tts(text)
+    audio = engine.infer(text=normalized, voice=voice_data)
+    return (engine.sample_rate, audio)
+
+def preview_voice(choice):
+    """Nghe thử NGAY giọng đang chọn trong dropdown bằng 1 câu ngắn — không
+    cần bấm Xác nhận và không cần sang Bước 2 — để so sánh nhiều giọng liên
+    tục tại chỗ. Câu dài kiểm tra số/tên riêng dành riêng cho Bước 2, sau khi
+    đã chốt giọng, để không làm chậm việc lướt qua nhiều giọng ở đây."""
+    voice_id = _voice_id_from_choice(choice)
+    if not voice_id:
+        return None, "❌ Chưa chọn giọng để nghe thử."
+    engine = init_tts()
+    voice_data = engine.get_preset_voice(voice_id)
+    return _synthesize_sample(voice_data, PREVIEW_TEXT), f"✅ Đang đọc thử: {choice}"
+
 def select_preset_voice(choice):
     global selected_voice
     if not choice: return "❌ Chưa chọn giọng.", gr.update()
@@ -58,26 +115,94 @@ def select_preset_voice(choice):
 
 def generate_sample():
     if selected_voice is None: return None, "❌ Chưa chọn giọng đọc."
+    return _synthesize_sample(selected_voice, SAMPLE_TEXT), "✅ Đã tạo bản mẫu."
+
+
+def fetch_ngoc_huyen_sample():
+    """Tải audio mẫu Ngọc Huyền (ví dụ chính thức trong kho VieNeu-TTS) về
+    máy 1 lần rồi dùng lại từ cache, để điền sẵn vào ô audio mẫu cho Voice
+    Cloning bên dưới."""
+    try:
+        if not os.path.isfile(NGOC_HUYEN_CACHE):
+            os.makedirs(os.path.dirname(NGOC_HUYEN_CACHE), exist_ok=True)
+            urllib.request.urlretrieve(NGOC_HUYEN_URL, NGOC_HUYEN_CACHE)
+    except Exception as e:
+        return None, f"❌ Lỗi tải giọng mẫu Ngọc Huyền: {e}"
+    return NGOC_HUYEN_CACHE, "✅ Đã tải giọng mẫu Ngọc Huyền — bấm \"Nhân bản & Nghe thử\" bên dưới."
+
+def clone_and_preview(audio_path):
+    """Nhân bản giọng từ 1 audio mẫu 3-5 giây (v3 Turbo nhân bản trực tiếp
+    từ audio, không cần nhập nội dung) và đọc thử ngay bằng câu ngắn để
+    kiểm tra nhanh trước khi xác nhận dùng giọng này."""
+    if not audio_path or not os.path.isfile(audio_path):
+        return None, None, "❌ Chưa có audio mẫu để nhân bản."
     engine = init_tts()
-    normalized = normalize_text_for_tts(SAMPLE_TEXT)
-    audio = engine.infer(text=normalized, voice=selected_voice)
-    return (engine.sample_rate, audio), "✅ Đã tạo bản mẫu."
+    try:
+        speaker_emb, ref_codes = engine.encode_reference(audio_path, denoise=True)
+    except Exception as e:
+        return None, None, f"❌ Lỗi nhân bản giọng: {e}"
+    voice_data = {"speaker_emb": speaker_emb, "codes": ref_codes}
+    sample = _synthesize_sample(voice_data, PREVIEW_TEXT)
+    return voice_data, sample, "✅ Đã nhân bản giọng — nghe thử ở trên, bấm \"Xác nhận\" nếu ưng ý."
 
-def process_chapter(input_file, progress=gr.Progress(track_tqdm=False)):
-    if selected_voice is None: return "❌ Chưa chọn giọng. Quay lại Bước 1.", []
-    file_path = input_file.name if input_file else "input.txt"
-    if not os.path.exists(file_path): return f"❌ Không tìm thấy file: {file_path}", []
+def confirm_cloned_voice(cloned_voice):
+    global selected_voice
+    if cloned_voice is None:
+        return "❌ Chưa nhân bản giọng nào để xác nhận. Bấm \"Nhân bản & Nghe thử\" trước.", gr.update()
+    selected_voice = cloned_voice
+    gr.Info("✅ Đã xác nhận dùng giọng nhân bản.")
+    return "✅ Đã xác nhận dùng giọng nhân bản.", gr.Tabs(selected=1)
 
-    with open(file_path, 'r', encoding='utf-8') as f:
+
+def _chapter_dir_for(text_norm, source_path=None):
+    """Suy ra (prefix, chapter_dir, chapter_num) từ text đã normalize, dùng chung cho mọi bước.
+
+    Khi KHÔNG tìm thấy "Chương N" / "Chapter N" trong text (chapter_num = None),
+    KHÔNG dùng chung 1 thư mục "part" tĩnh cho mọi file — làm vậy thì 2 chương
+    khác nhau không có tiêu đề sẽ bị ghi đè/trộn lẫn vào cùng thư mục, và với
+    cơ chế resume (bỏ qua file .wav đã có) thì chương thứ 2 còn có thể bị coi
+    nhầm là "đã render xong" bằng nội dung của chương thứ 1. Thay vào đó, dùng
+    tên file nguồn làm phần phân biệt.
+    """
+    chapter_num = detect_chapter_range(text_norm)
+    if chapter_num:
+        prefix = f"C_{chapter_num}"
+    else:
+        base = os.path.splitext(os.path.basename(source_path))[0] if source_path else "unknown"
+        base = re.sub(r'[^\w\-]+', '_', base).strip('_') or "unknown"
+        prefix = f"part_{base}"
+    return prefix, os.path.join(OUTPUT_DIR, prefix), chapter_num
+
+def _is_chapter_complete(chapter_dir, prefix, want_video):
+    """Chương coi là XONG nếu: có ảnh nền -> đã có video; không có ảnh nền ->
+    đã có audio ghép + phụ đề. Dùng để BỎ QUA hẳn 1 chương khi chạy batch,
+    tránh làm lại từ đầu những chương đã xử lý xong ở lần chạy trước."""
+    if want_video:
+        p = os.path.join(chapter_dir, f"{prefix}_video.mp4")
+    else:
+        p = os.path.join(chapter_dir, f"{prefix}_merged.srt")
+    return os.path.isfile(p) and os.path.getsize(p) > 0
+
+def _render_chapter_audio(text_file_path, progress_cb=None):
+    """Bước 3: normalize -> chia phần -> render audio (batch GPU, có resume).
+
+    progress_cb(done, total, desc), nếu có, được gọi sau mỗi lô render.
+    Trả về (chapter_dir, prefix, log, generated_files, total_chunks).
+    """
+    if selected_voice is None:
+        raise RuntimeError("Chưa chọn giọng. Quay lại Bước 1.")
+    if not os.path.exists(text_file_path):
+        raise RuntimeError(f"Không tìm thấy file: {text_file_path}")
+
+    with open(text_file_path, 'r', encoding='utf-8') as f:
         text = f.read()
-    if not text.strip(): return "❌ File trống.", []
+    if not text.strip():
+        raise RuntimeError("File trống.")
 
     text = normalize_text_for_tts(text)
     engine = init_tts()
 
-    chapter_num = detect_chapter_range(text)
-    prefix = f"C_{chapter_num}" if chapter_num else "part"
-    chapter_dir = os.path.join(OUTPUT_DIR, prefix)
+    prefix, chapter_dir, chapter_num = _chapter_dir_for(text, source_path=text_file_path)
     os.makedirs(chapter_dir, exist_ok=True)
 
     # Lưu text gốc vào thư mục chương để subtitle_generator dùng
@@ -91,117 +216,282 @@ def process_chapter(input_file, progress=gr.Progress(track_tqdm=False)):
     if not chapter_texts:
         chapter_texts = [text]
 
-    generated_files = []
-    total_chunks = sum(len(split_text_for_tts(c, 250)) for c in chapter_texts)
-    log = f"📖 Chương {chapter_num or '???'} — {total_chunks} phần\n"
-
-    global_idx = 0
+    # Liệt kê TOÀN BỘ các phần cần có trước, kèm đường dẫn file đích.
+    all_parts = []
     for c_idx, chap_text in enumerate(chapter_texts):
         chunks = split_text_for_tts(chap_text, 250)
         for p_idx, chunk in enumerate(chunks):
             filename = f"{prefix}_c{c_idx+1:02d}_p{p_idx+1:02d}.wav"
-            output_file = os.path.join(chapter_dir, filename)
-            word_count = len(chunk.split())
-            progress((global_idx, total_chunks), desc=f"Render {filename} ({word_count} từ)")
-            audio = engine.infer(text=chunk, voice=selected_voice)
-            engine.save(audio, output_file)
-            generated_files.append(os.path.abspath(output_file))
-            log += f"✅ {filename} ({word_count} từ)\n"
-            global_idx += 1
+            output_file = os.path.abspath(os.path.join(chapter_dir, filename))
+            all_parts.append({"filename": filename, "path": output_file, "text": chunk, "words": len(chunk.split())})
+
+    total_chunks = len(all_parts)
+
+    # Bỏ qua phần đã render sẵn (file .wav tồn tại và không rỗng) — quan trọng
+    # khi chạy trên Colab vì phiên có thể ngắt kết nối giữa chừng; không có
+    # bước này thì phải render lại từ đầu toàn bộ chương.
+    already_done = [p for p in all_parts if os.path.isfile(p["path"]) and os.path.getsize(p["path"]) > 0]
+    pending = [p for p in all_parts if p not in already_done]
+
+    log = f"📖 Chương {prefix} — {total_chunks} phần"
+    log += f" ({len(already_done)} đã render sẵn, bỏ qua)\n" if already_done else "\n"
+    if chapter_num is None:
+        log += (
+            f"⚠️ Không tìm thấy \"Chương N\" / \"Chapter N\" trong văn bản — "
+            f"dùng tên file làm thư mục ({prefix}) để tránh trộn lẫn với chương khác. "
+            f"Nên thêm tiêu đề chương vào đầu file nếu có thể.\n"
+        )
+
+    done_count = len(already_done)
+    t_render_start = time.time()
+    # Render theo LÔ qua engine.infer_batch(): trên GPU các phần trong 1 lô
+    # được gộp chung 1 forward pass (nhanh hơn nhiều so với gọi infer() tuần
+    # tự từng phần); trên CPU vẫn chạy đúng, chỉ là tuần tự bên trong SDK.
+    for i in range(0, len(pending), BATCH_GROUP_SIZE):
+        group = pending[i:i + BATCH_GROUP_SIZE]
+        if progress_cb:
+            progress_cb(done_count, total_chunks, f"render lô {i // BATCH_GROUP_SIZE + 1} ({len(group)} phần)")
+        wavs = engine.infer_batch(
+            texts=[g["text"] for g in group], voice=selected_voice,
+            repetition_penalty=REPETITION_PENALTY,
+        )
+        for part, audio in zip(group, wavs):
+            engine.save(audio, part["path"])
+            log += f"✅ {part['filename']} ({part['words']} từ)\n"
+            done_count += 1
+    render_elapsed = time.time() - t_render_start
 
     gc.collect()
-    log += f"\n🎉 HOÀN TẤT! {total_chunks} file .wav"
-    log += f"\n📂 {os.path.abspath(chapter_dir)}"
-    return log, generated_files
+    generated_files = [p["path"] for p in all_parts]
+    log += f"🎉 Audio xong: {total_chunks} file .wav\n"
+    log += f"⏱️ Render audio: {render_elapsed:.1f}s ({len(pending)} phần mới)\n"
+    return chapter_dir, prefix, log, generated_files, total_chunks
 
-def run_postprocess(input_file, bgm_file, bgm_volume, silence_dur, bg_image, font_size, progress=gr.Progress(track_tqdm=False)):
-    """Chạy toàn bộ pipeline: Hậu kỳ Audio -> Subtitle -> Render Video."""
+def _run_postprocess_core(text_file_path, bgm_path, bgm_volume, silence_dur, bg_image_path, font_size,
+                           progress_cb=None, burn_subtitles=True):
+    """Bước 4: ghép audio -> trộn BGM (nếu có) -> tạo phụ đề -> render video (nếu có ảnh nền).
+
+    progress_cb(fraction 0..1, desc), nếu có, được gọi ở mỗi giai đoạn.
+    burn_subtitles=False: bỏ qua bước ghi cứng phụ đề (nhanh hơn nhiều) —
+    vẫn tạo ra video (ảnh nền + audio) và file .srt riêng để tự upload lên
+    YouTube làm phụ đề (Video > Phụ đề) thay vì ghi cứng vào hình.
+    Trả về (chapter_dir, prefix, log, video_path_or_None).
+    """
     from audio_postprocess import get_ffmpeg, get_wav_files, concat_with_silence, mix_bgm
     from subtitle_generator import generate_srt
     from video_renderer import render_video
 
-    # Xác định thư mục chương từ bước 3
-    file_path = input_file.name if input_file else "input.txt"
-    if not os.path.exists(file_path):
-        return "❌ Chưa có file text. Hãy render audio ở Bước 3 trước.", None
-
-    with open(file_path, 'r', encoding='utf-8') as f:
+    with open(text_file_path, 'r', encoding='utf-8') as f:
         text = f.read()
     text = normalize_text_for_tts(text)
-    chapter_num = detect_chapter_range(text)
-    prefix = f"C_{chapter_num}" if chapter_num else "part"
-    chapter_dir = os.path.join(OUTPUT_DIR, prefix)
+    prefix, chapter_dir, _chapter_num = _chapter_dir_for(text, source_path=text_file_path)
 
     if not os.path.isdir(chapter_dir):
-        return f"❌ Thư mục chương không tồn tại: {chapter_dir}\nHãy chạy Bước 3 trước.", None
+        raise RuntimeError(f"Thư mục chương không tồn tại: {chapter_dir}. Chưa render audio.")
 
     log = ""
-    try:
-        ffmpeg = get_ffmpeg()
-        log += f"🛠️ FFmpeg found: {ffmpeg}\n"
-    except FileNotFoundError:
-        return "❌ FFmpeg chưa cài. Chạy: winget install Gyan.FFmpeg rồi khởi động lại.", None
+    ffmpeg = get_ffmpeg()  # ném FileNotFoundError nếu chưa cài — để caller xử lý
+    log += f"🛠️ FFmpeg: {ffmpeg}\n"
 
     wav_files = get_wav_files(chapter_dir)
     if not wav_files:
-        return f"❌ Không tìm thấy file .wav trong {chapter_dir}. Hãy chạy Bước 3 trước.", None
+        raise RuntimeError(f"Không tìm thấy file .wav trong {chapter_dir}.")
 
-    # === BƯỚC 4a: Ghép audio + silence ===
-    progress(0.1, desc="Đang ghép audio...")
+    if progress_cb: progress_cb(0.1, "đang ghép audio")
     log += "[1/3] GHÉP AUDIO\n"
+    t0 = time.time()
     merged_wav = os.path.join(chapter_dir, f"{prefix}_merged.wav")
     concat_with_silence(ffmpeg, wav_files, silence_dur, merged_wav)
-    log += f"✅ Ghép {len(wav_files)} file, silence={silence_dur}s\n"
+    log += f"✅ Ghép {len(wav_files)} file, silence={silence_dur}s — ⏱️ {time.time() - t0:.1f}s\n"
 
-    # === BƯỚC 4b: Trộn BGM (nếu có) ===
     final_audio = merged_wav
-    if bgm_file is not None:
-        bgm_path = bgm_file.name if hasattr(bgm_file, 'name') else bgm_file
-        if os.path.isfile(bgm_path):
-            progress(0.25, desc="Đang trộn nhạc nền...")
-            log += f"\n🎵 TRỘN BGM (volume: {bgm_volume})\n"
-            bgm_wav = os.path.join(chapter_dir, f"{prefix}_final.wav")
-            mix_bgm(ffmpeg, merged_wav, bgm_path, bgm_wav, bgm_volume)
-            final_audio = bgm_wav
-            log += "✅ Đã trộn nhạc nền\n"
+    if bgm_path and os.path.isfile(bgm_path):
+        if progress_cb: progress_cb(0.25, "đang trộn nhạc nền")
+        log += f"\n🎵 TRỘN BGM (volume: {bgm_volume})\n"
+        t0 = time.time()
+        bgm_wav = os.path.join(chapter_dir, f"{prefix}_final.wav")
+        mix_bgm(ffmpeg, merged_wav, bgm_path, bgm_wav, bgm_volume)
+        final_audio = bgm_wav
+        log += f"✅ Đã trộn nhạc nền — ⏱️ {time.time() - t0:.1f}s\n"
 
-    # === BƯỚC 5: Tạo phụ đề từ text gốc ===
-    progress(0.4, desc="Đang tạo phụ đề...")
+    if progress_cb: progress_cb(0.4, "đang tạo phụ đề")
     log += "\n[2/3] TẠO PHỤ ĐỀ (từ text gốc)\n"
-    # Lưu text gốc nếu chưa có
+    t0 = time.time()
     text_save_path = os.path.join(chapter_dir, f"{prefix}.txt")
     if not os.path.isfile(text_save_path):
         with open(text_save_path, "w", encoding="utf-8") as tf:
             tf.write(text)
     srt_path = generate_srt(chapter_dir, text_save_path, silence_dur, max_chars=60)
     if not srt_path:
-        return log + "❌ Lỗi tạo phụ đề.", None
-    log += f"✅ Đã tạo: {os.path.basename(srt_path)}\n"
+        raise RuntimeError("Lỗi tạo phụ đề.")
+    log += f"✅ Đã tạo: {os.path.basename(srt_path)} — ⏱️ {time.time() - t0:.1f}s\n"
 
-    # === BƯỚC 6: Render video ===
-    if bg_image is None:
-        return log + "\n⚠️ Chưa chọn ảnh nền → Dừng ở bước audio + subtitle.\nUpload ảnh nền để render video.", None
+    if not bg_image_path:
+        log += "\n⚠️ Chưa có ảnh nền → dừng ở bước audio + subtitle (không tạo video).\n"
+        if progress_cb: progress_cb(1.0, "xong (chưa có video)")
+        return chapter_dir, prefix, log, None
 
-    progress(0.5, desc="Đang render video (Intel QSV)...")
-    log += "\n[3/3] RENDER VIDEO (Intel QSV)\n"
-    img_path = bg_image.name if hasattr(bg_image, 'name') else bg_image
+    if progress_cb: progress_cb(0.5, "đang render video (tự dò encoder)")
+    log += "\n[3/3] RENDER VIDEO" + (" (không ghi cứng phụ đề)" if not burn_subtitles else "") + "\n"
+    t0 = time.time()
     out_mp4 = os.path.join(chapter_dir, f"{prefix}_video.mp4")
-    render_video(final_audio, img_path, srt_path, out_mp4, font_size=font_size)
+    font_name = None if sys.platform == "win32" else LINUX_SUBTITLE_FONT
+    used_encoder = render_video(
+        final_audio, bg_image_path, srt_path, out_mp4, font_size=font_size,
+        font_name=font_name, burn_subtitles=burn_subtitles,
+    )
+    video_elapsed = time.time() - t0
 
-    if os.path.isfile(out_mp4):
-        size_mb = os.path.getsize(out_mp4) / (1024 * 1024)
-        log += f"✅ Video: {os.path.basename(out_mp4)} ({size_mb:.1f} MB)\n"
-        log += f"\n🎉 PIPELINE HOÀN TẤT!"
-        progress(1.0, desc="Hoàn tất!")
-        return log, out_mp4
+    if not os.path.isfile(out_mp4):
+        raise RuntimeError("Lỗi render video. Kiểm tra log FFmpeg.")
+    size_mb = os.path.getsize(out_mp4) / (1024 * 1024)
+    log += f"✅ Video: {os.path.basename(out_mp4)} ({size_mb:.1f} MB) — encoder: {used_encoder}\n"
+    log += f"⏱️ Render video{'' if burn_subtitles else ' (không ghi cứng phụ đề)'}: {video_elapsed:.1f}s\n"
+    if progress_cb: progress_cb(1.0, "hoàn tất")
+    return chapter_dir, prefix, log, out_mp4
+
+def _process_chapter_e2e(text_file_path, bgm_path, bgm_volume, silence_dur, bg_image_path, font_size,
+                          render_cb=None, pp_cb=None, burn_subtitles=True):
+    """Chạy trọn 1 chương: Bước 3 (render audio) nối liền Bước 4 (hậu kỳ + video),
+    không cần thao tác tay giữa 2 bước. Tự bỏ qua nếu chương đã xong từ trước.
+
+    Trả về (prefix, log, video_path_or_None, da_bo_qua, khong_tim_thay_tieu_de_chuong).
+    """
+    with open(text_file_path, 'r', encoding='utf-8') as f:
+        raw_text = f.read()
+    text_norm = normalize_text_for_tts(raw_text)
+    prefix, chapter_dir, chapter_num = _chapter_dir_for(text_norm, source_path=text_file_path)
+    no_heading = chapter_num is None
+    want_video = bool(bg_image_path)
+
+    if _is_chapter_complete(chapter_dir, prefix, want_video):
+        existing = os.path.join(chapter_dir, f"{prefix}_video.mp4") if want_video else None
+        return prefix, f"⏭️ {prefix}: đã xử lý xong từ trước, bỏ qua.\n", existing, True, no_heading
+
+    t_total = time.time()
+    _, _, render_log, _, _ = _render_chapter_audio(text_file_path, progress_cb=render_cb)
+    _, _, pp_log, video_path = _run_postprocess_core(
+        text_file_path, bgm_path, bgm_volume, silence_dur, bg_image_path, font_size,
+        progress_cb=pp_cb, burn_subtitles=burn_subtitles,
+    )
+    total_elapsed = time.time() - t_total
+    log = render_log + "\n" + pp_log + f"\n⏱️ TỔNG THỜI GIAN CHƯƠNG: {total_elapsed:.1f}s\n"
+    return prefix, log, video_path, False, no_heading
+
+def scan_output_health():
+    """Quét toàn bộ outputs/ và báo cáo chương nào đang THIẾU file — để phát
+    hiện NGAY những chương dở dang (như sự cố chương 1990 trước đây: có audio
+    nhưng thiếu hẳn phụ đề/video vì hậu kỳ bị gián đoạn giữa chừng), thay vì
+    tình cờ phát hiện ra sau này. "Chưa có video" một mình KHÔNG bị tính là
+    lỗi (có thể do cố ý không dùng ảnh nền) — chỉ thiếu audio/phụ đề/text gốc
+    mới được coi là vấn đề thật sự.
+    """
+    if not os.path.isdir(OUTPUT_DIR):
+        return "⚠️ Chưa có thư mục outputs/ — chưa render chương nào."
+
+    rows = []
+    for name in sorted(os.listdir(OUTPUT_DIR)):
+        chapter_dir = os.path.join(OUTPUT_DIR, name)
+        if not os.path.isdir(chapter_dir):
+            continue
+        files = os.listdir(chapter_dir)
+        parts = [f for f in files if re.match(rf"^{re.escape(name)}_c\d+_p\d+\.wav$", f)]
+        has_txt = f"{name}.txt" in files
+        has_merged = f"{name}_merged.wav" in files
+        srt_path = os.path.join(chapter_dir, f"{name}_merged.srt")
+        has_srt = os.path.isfile(srt_path) and os.path.getsize(srt_path) > 0
+        video_path = os.path.join(chapter_dir, f"{name}_video.mp4")
+        has_video = os.path.isfile(video_path) and os.path.getsize(video_path) > 0
+
+        issues = []
+        if not parts:
+            issues.append("không có file audio nào")
+        if parts and not has_merged:
+            issues.append("chưa ghép audio (thiếu _merged.wav)")
+        if parts and not has_srt:
+            issues.append("thiếu phụ đề .srt — hậu kỳ có thể đã bị gián đoạn")
+        if not has_txt:
+            issues.append("thiếu text gốc .txt — không thể tạo lại phụ đề nếu cần")
+
+        rows.append((name, len(parts), has_video, issues))
+
+    if not rows:
+        return "⚠️ outputs/ chưa có chương nào."
+
+    bad = [r for r in rows if r[3]]
+    report = f"🩺 KIỂM TRA {len(rows)} CHƯƠNG trong outputs/\n"
+    report += f"✅ {len(rows) - len(bad)} chương ổn (đủ audio + phụ đề)\n"
+    if bad:
+        report += f"⚠️ {len(bad)} chương CÓ VẤN ĐỀ:\n"
+        for name, n_parts, has_video, issues in bad:
+            report += f"  • {name} ({n_parts} phần audio, {'có' if has_video else 'chưa có'} video): {', '.join(issues)}\n"
     else:
-        log += "❌ Lỗi render video. Kiểm tra log FFmpeg."
-        return log, None
+        report += "🎉 Không có chương nào thiếu file!\n"
+    return report
+
+def process_batch(input_files, bgm_file, bgm_volume, silence_dur, bg_image, font_size, burn_subtitles,
+                   progress=gr.Progress(track_tqdm=False)):
+    """Handler cho nút Batch: nhận nhiều file .txt, chạy Bước 3 -> Bước 4 liên tục
+    cho từng chương, tự bỏ qua chương đã xong, và KHÔNG dừng cả batch nếu 1
+    chương bị lỗi — để có thể để máy chạy qua đêm không cần trông chừng."""
+    if selected_voice is None:
+        return "❌ Chưa chọn giọng. Quay lại Bước 1.", []
+    if not input_files:
+        return "❌ Chưa chọn file nào.", []
+
+    bgm_path = bgm_file.name if (bgm_file and hasattr(bgm_file, 'name')) else bgm_file
+    img_path = bg_image.name if (bg_image and hasattr(bg_image, 'name')) else bg_image
+
+    # Sắp xếp theo tên file để thứ tự chạy dễ đoán (vd. chương thấp -> cao).
+    file_paths = sorted(f.name for f in input_files)
+    total_files = len(file_paths)
+
+    full_log = f"🌙 BATCH: {total_files} file — chương đã xong sẽ tự động được bỏ qua.\n\n"
+    videos, n_done, n_skipped, n_failed, n_no_heading = [], 0, 0, 0, 0
+    t_batch = time.time()
+
+    for idx, fp in enumerate(file_paths):
+        label = os.path.basename(fp)
+
+        def render_cb(done, total, desc, _idx=idx, _label=label):
+            local = (done / total) if total else 0
+            progress((_idx + local * 0.5) / total_files, desc=f"[{_idx+1}/{total_files}] {_label}: {desc}")
+
+        def pp_cb(frac, desc, _idx=idx, _label=label):
+            progress((_idx + 0.5 + frac * 0.5) / total_files, desc=f"[{_idx+1}/{total_files}] {_label}: {desc}")
+
+        progress(idx / total_files, desc=f"[{idx+1}/{total_files}] Bắt đầu {label}...")
+        try:
+            prefix, chap_log, video_path, skipped, no_heading = _process_chapter_e2e(
+                fp, bgm_path, bgm_volume, silence_dur, img_path, font_size,
+                render_cb=render_cb, pp_cb=pp_cb, burn_subtitles=burn_subtitles,
+            )
+            full_log += f"=== {prefix} ({label}) ===\n{chap_log}\n"
+            n_skipped += int(skipped)
+            n_done += int(not skipped)
+            n_no_heading += int(no_heading)
+            if video_path:
+                videos.append(video_path)
+        except FileNotFoundError:
+            n_failed += 1
+            full_log += f"=== ❌ {label}: FFmpeg chưa cài. Chạy: winget install Gyan.FFmpeg rồi khởi động lại. ===\n\n"
+        except Exception as e:
+            n_failed += 1
+            full_log += f"=== ❌ {label}: LỖI — {e} ===\n\n"
+
+    batch_elapsed = time.time() - t_batch
+    progress(1.0, desc="Hoàn tất batch!")
+    full_log += f"\n🎉 BATCH XONG: {n_done} chương mới, {n_skipped} bỏ qua (đã có sẵn), {n_failed} lỗi / tổng {total_files}."
+    full_log += f"\n⏱️ TỔNG THỜI GIAN BATCH: {batch_elapsed / 60:.1f} phút"
+    if n_no_heading:
+        full_log += f"\n⚠️ {n_no_heading} file không có \"Chương N\"/\"Chapter N\" trong văn bản (xem chi tiết ở trên)."
+    full_log += "\n\n" + scan_output_health()
+    return full_log, videos
 
 # ===== GIAO DIỆN GRADIO =====
-with gr.Blocks(title="VieNeu-Audio", theme=gr.themes.Soft()) as app:
-    gr.Markdown("# 🦜 VieNeu-Audio — Sản xuất Audiobook tự động")
-    gr.Markdown("**Quy trình khép kín:** Chọn giọng → Nghe mẫu → Render audio → Hậu kỳ & Render video")
+with gr.Blocks(title="VieNeu-TTS Auto Reader", theme=gr.themes.Soft()) as app:
+    gr.Markdown("# 🦜 VieNeu-TTS — Sản xuất Audiobook tự động")
+    gr.Markdown("**Quy trình khép kín:** Chọn giọng → Nghe mẫu → Batch: Audio → Video (chạy liên tục, tự bỏ qua chương đã xong)")
 
     with gr.Tabs() as tabs:
         # ========== BƯỚC 1 ==========
@@ -209,12 +499,48 @@ with gr.Blocks(title="VieNeu-Audio", theme=gr.themes.Soft()) as app:
             gr.Markdown("### Chọn giọng đọc từ danh sách preset")
             btn_load = gr.Button("📂 Tải danh sách giọng", variant="secondary")
             preset_dropdown = gr.Dropdown(label="Chọn giọng preset", choices=[], interactive=True)
-            btn_select_preset = gr.Button("✅ Xác nhận giọng", variant="primary")
             load_status = gr.Textbox(label="Trạng thái tải", interactive=False)
+
+            gr.Markdown("*Nghe thử nhanh giọng đang chọn ở trên bằng 1 câu ngắn — đổi giọng và bấm lại thoải mái để so sánh, không cần Xác nhận trước. Muốn kiểm tra kỹ khả năng đọc số/tên riêng, dùng \"Tạo bản mẫu\" ở Bước 2 sau khi đã xác nhận.*")
+            btn_preview = gr.Button("🔊 Nghe thử giọng này", variant="secondary")
+            preview_audio = gr.Audio(label="Bản đọc thử", elem_id="voice1_preview_player")
+            preview_status = gr.Textbox(label="Trạng thái nghe thử", interactive=False)
+
+            btn_select_preset = gr.Button("✅ Xác nhận giọng", variant="primary")
             voice_status = gr.Textbox(label="Trạng thái chọn giọng", interactive=False)
 
             btn_load.click(fn=load_preset_voices, outputs=[preset_dropdown, load_status])
+            btn_preview.click(fn=preview_voice, inputs=preset_dropdown, outputs=[preview_audio, preview_status])
             btn_select_preset.click(fn=select_preset_voice, inputs=preset_dropdown, outputs=[voice_status, tabs])
+
+            gr.Markdown("---")
+            with gr.Accordion("🦜 Hoặc: Nhân bản giọng từ audio mẫu (Voice Cloning)", open=False):
+                gr.Markdown(
+                    "Tải lên 3-5 giây audio mẫu của giọng bạn muốn dùng — v3 Turbo nhân bản "
+                    "trực tiếp từ audio, không cần nhập nội dung. Bạn cần có quyền sử dụng "
+                    "audio mẫu này (giọng của chính bạn, người đồng ý cho dùng, hoặc tài "
+                    "nguyên được cấp phép rõ ràng)."
+                )
+                clone_audio = gr.Audio(label="Audio mẫu (3-5 giây)", type="filepath")
+                btn_ngoc_huyen = gr.Button(
+                    "🎙️ Dùng giọng có sẵn: Ngọc Huyền (ví dụ chính thức từ VieNeu-TTS)",
+                    variant="secondary",
+                )
+                btn_clone_preview = gr.Button("🔊 Nhân bản & Nghe thử", variant="secondary")
+                clone_preview_audio = gr.Audio(label="Bản đọc thử (giọng nhân bản)", elem_id="clone_preview_player")
+                clone_status = gr.Textbox(label="Trạng thái", interactive=False)
+                btn_confirm_clone = gr.Button("✅ Xác nhận dùng giọng nhân bản này", variant="primary")
+
+                cloned_voice_state = gr.State(None)
+
+                btn_ngoc_huyen.click(fn=fetch_ngoc_huyen_sample, outputs=[clone_audio, clone_status])
+                btn_clone_preview.click(
+                    fn=clone_and_preview, inputs=[clone_audio],
+                    outputs=[cloned_voice_state, clone_preview_audio, clone_status],
+                )
+                btn_confirm_clone.click(
+                    fn=confirm_cloned_voice, inputs=[cloned_voice_state], outputs=[voice_status, tabs],
+                )
 
         # ========== BƯỚC 2 ==========
         with gr.Tab("② Nghe mẫu", id=1):
@@ -261,48 +587,52 @@ with gr.Blocks(title="VieNeu-Audio", theme=gr.themes.Soft()) as app:
                 }"""
             )
 
-        # ========== BƯỚC 3 ==========
-        with gr.Tab("③ Render Audio", id=2):
-            gr.Markdown("### Upload file .txt chương truyện để tạo audio")
-            gr.Markdown("*Để trống sẽ dùng file `input.txt` mặc định.*")
-            input_file = gr.File(label="File chương truyện (.txt)", file_types=[".txt"])
-            btn_render = gr.Button("🚀 Bắt đầu render audio", variant="primary")
-            render_log = gr.Textbox(label="Nhật ký render", lines=12, interactive=False)
-            gr.Markdown("---")
-            gr.Markdown("### ⬇️ File audio đã tạo")
-            download_files = gr.File(label="Tải xuống file .wav", file_count="multiple", interactive=False)
+        # ========== BƯỚC 3: BATCH — RENDER AUDIO -> VIDEO TỰ ĐỘNG ==========
+        with gr.Tab("③ Render → Video (Batch)", id=2):
+            gr.Markdown("### Upload nhiều file .txt chương truyện — render audio, ghép, tạo phụ đề và xuất video cho từng chương liên tục, không cần thao tác giữa chừng.")
+            gr.Markdown("*Chương đã xử lý xong (đã có video, hoặc đã có audio+phụ đề nếu không dùng ảnh nền) sẽ tự động được bỏ qua ở lần chạy sau — an toàn để bấm chạy lại hoặc để máy chạy qua đêm.*")
 
-            btn_render.click(fn=process_chapter, inputs=input_file, outputs=[render_log, download_files])
-
-        # ========== BƯỚC 4 ==========
-        with gr.Tab("④ Hậu kỳ & Video", id=3):
-            gr.Markdown("### Ghép audio → Tạo phụ đề → Render video tự động")
-            gr.Markdown("*Sử dụng cùng file .txt đã upload ở Bước 3.*")
+            batch_input_files = gr.File(
+                label="File(s) chương truyện (.txt) — có thể chọn nhiều file cùng lúc",
+                file_types=[".txt"], file_count="multiple",
+            )
 
             with gr.Row():
                 with gr.Column(scale=1):
-                    gr.Markdown("#### 📂 Nguồn dữ liệu")
-                    pp_input_file = gr.File(label="File .txt chương truyện (giống Bước 3)", file_types=[".txt"])
-                    pp_bg_image = gr.File(label="🖼️ Ảnh nền video (jpg/png)", file_types=[".jpg", ".jpeg", ".png"])
-
+                    gr.Markdown("#### 📂 Ảnh nền video")
+                    batch_bg_image = gr.File(
+                        label="🖼️ Ảnh nền (jpg/png, dùng chung cho mọi chương). Để trống = chỉ render audio + phụ đề, không tạo video.",
+                        file_types=[".jpg", ".jpeg", ".png"],
+                    )
                 with gr.Column(scale=1):
-                    gr.Markdown("#### ⚙️ Tuỳ chỉnh")
-                    pp_bgm = gr.File(label="🎵 Nhạc nền BGM (tuỳ chọn)", file_types=[".mp3", ".wav"])
-                    pp_bgm_vol = gr.Slider(label="Âm lượng BGM", minimum=0.01, maximum=0.2, value=0.05, step=0.01)
-                    pp_silence = gr.Slider(label="Khoảng lặng giữa các phần (giây)", minimum=0.1, maximum=3.0, value=0.5, step=0.1)
-                    pp_font = gr.Slider(label="Cỡ chữ phụ đề", minimum=14, maximum=40, value=24, step=1)
+                    gr.Markdown("#### ⚙️ Tuỳ chỉnh (dùng chung cho mọi chương)")
+                    batch_bgm = gr.File(label="🎵 Nhạc nền BGM (tuỳ chọn)", file_types=[".mp3", ".wav"])
+                    batch_bgm_vol = gr.Slider(label="Âm lượng BGM", minimum=0.01, maximum=0.2, value=0.05, step=0.01)
+                    batch_silence = gr.Slider(label="Khoảng lặng giữa các phần (giây)", minimum=0.1, maximum=3.0, value=0.5, step=0.1)
+                    batch_font = gr.Slider(label="Cỡ chữ phụ đề", minimum=14, maximum=40, value=24, step=1)
+                    batch_burn_subs = gr.Checkbox(
+                        value=True, label="🔥 Ghi cứng phụ đề vào video",
+                        info="Tắt để render NHANH HƠN NHIỀU (bỏ qua bước tốn thời gian nhất) — dùng khi bạn tự upload file .srt riêng lên YouTube (Video > Phụ đề) thay vì ghi cứng vào hình.",
+                    )
 
-            btn_pipeline = gr.Button("🎬 BẮT ĐẦU PIPELINE: Audio → Subtitle → Video", variant="primary", size="lg")
-            pipeline_log = gr.Textbox(label="Nhật ký Pipeline", lines=15, interactive=False)
+            btn_batch = gr.Button("🌙 Chạy Batch: Audio → Video cho tất cả file", variant="primary", size="lg")
+            batch_log = gr.Textbox(label="Nhật ký Batch", lines=20, interactive=False)
             gr.Markdown("---")
-            gr.Markdown("### 🎥 Video hoàn chỉnh")
-            output_video = gr.Video(label="Video đầu ra")
+            gr.Markdown("### 🎥 Video đã hoàn thành")
+            batch_videos = gr.File(label="Tải video (.mp4)", file_count="multiple", interactive=False)
 
-            btn_pipeline.click(
-                fn=run_postprocess,
-                inputs=[pp_input_file, pp_bgm, pp_bgm_vol, pp_silence, pp_bg_image, pp_font],
-                outputs=[pipeline_log, output_video]
+            btn_batch.click(
+                fn=process_batch,
+                inputs=[batch_input_files, batch_bgm, batch_bgm_vol, batch_silence, batch_bg_image, batch_font, batch_burn_subs],
+                outputs=[batch_log, batch_videos]
             )
+
+            gr.Markdown("---")
+            with gr.Accordion("🩺 Kiểm tra sức khoẻ toàn bộ outputs/ (chương nào đang thiếu file)", open=False):
+                gr.Markdown("*Quét lại mọi chương đã từng render — kể cả những chương KHÔNG có trong lần chạy batch này — để phát hiện chương còn thiếu audio/phụ đề (báo cáo này cũng tự chạy sau mỗi lần Batch ở trên).*")
+                btn_health = gr.Button("🩺 Kiểm tra ngay", variant="secondary")
+                health_report = gr.Textbox(label="Báo cáo", lines=12, interactive=False)
+                btn_health.click(fn=scan_output_health, outputs=[health_report])
 
 if __name__ == "__main__":
     app.launch()

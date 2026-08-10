@@ -12,7 +12,7 @@ def split_text_for_tts(text, max_words=250):
             chunks.append(" ".join(current_chunk))
             current_chunk = []
             current_word_count = 0
-
+        
         current_chunk.append(sentence)
         current_word_count += word_count
 

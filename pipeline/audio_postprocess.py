@@ -14,7 +14,8 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.append(current_dir)
 
-sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 def get_ffmpeg():
     """Tìm đường dẫn FFmpeg với cơ chế tìm kiếm sâu trên Windows."""
@@ -42,7 +43,11 @@ def get_ffmpeg():
     raise FileNotFoundError("FFmpeg không tìm thấy.")
 
 def get_wav_files(chapter_dir):
-    files = [f for f in os.listdir(chapter_dir) if f.lower().endswith(".wav")]
+    """Lấy danh sách file .wav part (không lấy file merged/final) — nếu không
+    loại trừ, chạy lại hậu kỳ trên 1 chương đã có sẵn _merged.wav/_final.wav
+    từ lần trước sẽ ghép luôn file đó vào, gây trùng lặp nội dung."""
+    files = [f for f in os.listdir(chapter_dir)
+             if f.lower().endswith(".wav") and "_merged" not in f and "_final" not in f]
     files.sort(key=lambda x: [int(c) if c.isdigit() else c for c in re.split(r'(\d+)', x)])
     return [os.path.join(chapter_dir, f) for f in files]
 
@@ -55,7 +60,7 @@ def generate_silence(ffmpeg, duration_s, sample_rate=24000, output_path=None):
 def concat_with_silence(ffmpeg, wav_files, silence_duration, output_path):
     silence_file = generate_silence(ffmpeg, silence_duration)
     chapter_silence_file = generate_silence(ffmpeg, 2.0)
-
+    
     def get_chapter_idx(filename):
         m = re.search(r'_c(\d+)_p\d+\.wav', os.path.basename(filename))
         return int(m.group(1)) if m else 0
@@ -71,7 +76,7 @@ def concat_with_silence(ffmpeg, wav_files, silence_duration, output_path):
                     f.write(f"file '{os.path.abspath(chapter_silence_file)}'\n")
                 else:
                     f.write(f"file '{os.path.abspath(silence_file)}'\n")
-
+                    
     cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c:a", "pcm_s16le", output_path]
     subprocess.run(cmd, capture_output=True, check=True)
     os.remove(silence_file)

@@ -1,6 +1,6 @@
 """
 Make Video: Kịch bản tự động hóa 100% từ thư mục file .wav lẻ thành Video YouTube.
-Quy trình: Ghép Audio (có BGM) -> Tạo Subtitle -> Render Video QSV.
+Quy trình: Ghép Audio (có BGM) -> Tạo Subtitle -> Render Video (tự dò encoder).
 
 Dùng: uv run python make_video.py outputs/C_1846 background.png
        uv run python make_video.py outputs/C_1846 background.png --bgm bgm/ambient.mp3
@@ -21,7 +21,8 @@ from subtitle_generator import generate_srt
 from video_renderer import render_video
 
 
-sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 def main():
     parser = argparse.ArgumentParser(description="Tự động hoá: Audio Part -> Video Hoàn Chỉnh")
@@ -32,6 +33,10 @@ def main():
     parser.add_argument("--silence", type=float, default=0.5, help="Khoảng lặng giữa các part (giây)")
     parser.add_argument("--text", default=None, help="Đường dẫn file text gốc (nếu không tự tìm được)")
     parser.add_argument("--font", type=int, default=24, help="Cỡ chữ phụ đề (mặc định: 24)")
+    parser.add_argument(
+        "--encoder", default=None, choices=["h264_nvenc", "h264_qsv", "libx264"],
+        help="Ép dùng 1 encoder cụ thể thay vì tự dò (mặc định: tự dò NVENC -> QSV -> libx264)",
+    )
 
     args = parser.parse_args()
 
@@ -49,7 +54,7 @@ def main():
     ffmpeg = get_ffmpeg()
     chapter_name = os.path.basename(args.chapter_dir)
     wav_files = get_wav_files(args.chapter_dir)
-
+    
     if not wav_files:
         print(f"❌ Không tìm thấy file .wav part trong: {args.chapter_dir}")
         sys.exit(1)
@@ -58,7 +63,7 @@ def main():
     print("\n[1/3] ĐANG XỬ LÝ AUDIO...")
     merged_wav = os.path.join(args.chapter_dir, f"{chapter_name}_merged.wav")
     concat_with_silence(ffmpeg, wav_files, args.silence, merged_wav)
-
+    
     final_audio = merged_wav
     if args.bgm and os.path.isfile(args.bgm):
         print(f"🎵 Đang trộn nhạc nền...")
@@ -74,13 +79,13 @@ def main():
         sys.exit(1)
 
     # BƯỚC 3: VIDEO RENDERING
-    print("\n[3/3] ĐANG RENDER VIDEO (INTEL QSV)...")
+    print("\n[3/3] ĐANG RENDER VIDEO...")
     out_mp4 = os.path.join(args.chapter_dir, f"{chapter_name}_video.mp4")
-    render_video(final_audio, args.image, srt_path, out_mp4, font_size=args.font)
+    used_encoder = render_video(final_audio, args.image, srt_path, out_mp4, font_size=args.font, encoder=args.encoder)
 
     print("=" * 50)
     print("🎉 QUY TRÌNH HOÀN TẤT THÀNH CÔNG!")
-    print(f"🎥 Video cuối: {os.path.abspath(out_mp4)}")
+    print(f"🎥 Video cuối: {os.path.abspath(out_mp4)} (encoder: {used_encoder})")
     print("=" * 50)
 
 if __name__ == "__main__":

@@ -15,7 +15,8 @@ if current_dir not in sys.path:
 
 from text_splitter import split_text_for_tts
 
-sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 def get_wav_duration(wav_path):
     """Lấy duration (giây) của file .wav."""
@@ -36,7 +37,7 @@ def find_text_file(chapter_dir):
     chapter_name = os.path.basename(chapter_dir)
     parent = os.path.dirname(chapter_dir)
     grandparent = os.path.dirname(parent)
-
+    
     candidates = [
         os.path.join(chapter_dir, f"{chapter_name}.txt"),
         os.path.join(parent, f"{chapter_name}.txt"),
@@ -52,7 +53,7 @@ def split_text_to_subtitle_lines(text, max_chars=60):
     sentences = re.split(r'(?<=[.!?,;:])\s+', text.strip())
     lines = []
     current_line = ""
-
+    
     for sentence in sentences:
         if len(current_line) + len(sentence) + 1 <= max_chars:
             current_line = (current_line + " " + sentence).strip()
@@ -95,7 +96,7 @@ def generate_srt(chapter_dir, text_file=None, silence=0.5, max_chars=60):
     chapter_texts = [c.strip() for c in chapter_texts if c.strip()]
     if not chapter_texts:
         chapter_texts = [full_text.strip()]
-
+        
     chunks = []
     chunk_chapter_map = []
     for c_idx, chap_text in enumerate(chapter_texts):
@@ -126,12 +127,20 @@ def generate_srt(chapter_dir, text_file=None, silence=0.5, max_chars=60):
             cursor = part_end + current_silence
             continue
 
-        line_dur = dur / len(sub_lines)
+        # Chia thời lượng của cả phần (dur) cho từng dòng phụ đề THEO TỈ LỆ
+        # SỐ KÝ TỰ, không chia đều — 1 dòng dài đọc lâu hơn 1 dòng ngắn, chia
+        # đều khiến dòng dài bị "chạy" trước lúc đọc xong và dòng ngắn bị giữ
+        # lại quá lâu, gây cảm giác phụ đề nhanh/chậm hơn giọng đọc thật.
+        # Đây vẫn là ước lượng theo độ dài chữ, không phải canh theo audio
+        # thật (forced alignment) nên không tuyệt đối chính xác.
+        total_chars = sum(len(l) for l in sub_lines) or 1
+        line_start = part_start
         for j, line in enumerate(sub_lines):
-            line_start = part_start + j * line_dur
-            line_end = part_start + (j + 1) * line_dur
+            seg_dur = dur * (len(line) / total_chars)
+            line_end = line_start + seg_dur
             srt_entries.append(f"{index}\n{format_ts(line_start)} --> {format_ts(line_end)}\n{line}\n")
             index += 1
+            line_start = line_end
 
         cursor = part_end + current_silence
 
