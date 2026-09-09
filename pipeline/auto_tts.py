@@ -1038,7 +1038,17 @@ with gr.Blocks(title="VieNeu-TTS Auto Reader", theme=gr.themes.Soft()) as app:
             glossary_candidates_table = gr.Dataframe(
                 headers=["Term", "Entity Type", "Canonical Form", "Confidence", "Chương phát hiện"],
                 datatype=["str", "str", "str", "number", "number"],
-                row_count=(0, "dynamic"), column_count=(5, "fixed"), interactive=True,
+                # col_count (KHONG PHAI column_count) - pyproject.toml ghim
+                # "gradio>=5.49.1" khong co tran, nen moi truong .venv that
+                # su (qua uv sync) se lay dung BAN TOI THIEU 5.49.1, noi
+                # tham so con ten "col_count" (chua doi ten). "column_count"
+                # chi ton tai tu Gradio 6.x - dung nham no gay
+                # "TypeError: Dataframe.__init__() got an unexpected keyword
+                # argument" ngay khi khoi dong (loi that, phat hien qua
+                # chay run.bat that, khong phai doan mo hinh). "col_count"
+                # van hoat dong binh thuong tren ca 5.x lan 6.x (chi bi
+                # canh bao deprecated tren 6.x, khong loi) nen an toan hon.
+                row_count=(0, "dynamic"), col_count=(5, "fixed"), interactive=True,
                 label="Thuật ngữ mới chờ duyệt",
             )
             btn_approve_glossary = gr.Button("✅ Duyệt & Lưu vào Glossary", variant="primary")

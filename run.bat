@@ -62,27 +62,44 @@ uv --version
 
 REM --- 2. uv sync: cai dependencies chinh cua goi vieneu (ban CPU/minimal,
 REM     KHONG --group gpu) - tu tai dung Python 3.12 theo .python-version.
-echo.
-echo [2/6] Dang chay "uv sync" (lan dau co the mat vai phut - tai Python
-echo       3.12 rieng + bien dich llama-cpp-python neu can)...
-uv sync
-if errorlevel 1 (
+REM
+REM QUAN TRONG: "uv sync" chi biet ve dependencies KHAI BAO trong
+REM pyproject.toml - no KHONG biet gi ve pipeline_requirements.txt (buoc 3
+REM ben duoi). Neu chay lai "uv sync" SAU KHI da cai pipeline_requirements.txt
+REM roi, uv se coi cac goi do la "du thua ngoai y muon" va GO CHUNG RA, roi
+REM buoc 3 lai phai cai lai tu dau - vua cham vua thua (da kiem chung that:
+REM 1 lan chay lai "uv sync" go ra 79 goi vua cai o buoc 3, gay cham va noisy
+REM log khong can thiet). Vi vay CHI chay "uv sync" 1 LAN DUY NHAT (danh dau
+REM bang file .venv\.voxdirector_synced) - nhung lan chay sau bo qua thang
+REM buoc nay. Neu ban vua sua pyproject.toml va can dong bo lai, xoa file
+REM danh dau nay (hoac xoa ca thu muc .venv) roi chay lai run.bat.
+if not exist ".venv\.voxdirector_synced" (
     echo.
-    echo [LOI] "uv sync" that bai.
-    echo Loi thuong gap nhat: goi llama-cpp-python can 1 wheel dung san rieng
-    echo cho Windows ma link tai ve hien dang BI HONG ^(404^) - day la 1 van
-    echo de o phia upstream ^(GitHub release cua goi vieneu^), KHONG phai loi
-    echo cua may ban. Neu gap loi ve llama-cpp-python o tren:
-    echo   1. Bao lai cho nguoi phu trach du an ^(link wheel can duoc cap nhat
-    echo      hoac tao lai^), VA
-    echo   2. Tam thoi co the thu cai "Visual Studio Build Tools" ^(chon muc
-    echo      "Desktop development with C++"^) de uv/pip tu bien dich tu
-    echo      source thay vi dung wheel dung san:
-    echo      https://visualstudio.microsoft.com/visual-cpp-build-tools/
-    pause
-    exit /b 1
+    echo [2/6] Dang chay "uv sync" ^(lan dau co the mat vai phut - tai Python
+    echo       3.12 rieng + bien dich llama-cpp-python neu can^)...
+    uv sync
+    if errorlevel 1 (
+        echo.
+        echo [LOI] "uv sync" that bai.
+        echo Loi thuong gap nhat: goi llama-cpp-python can 1 wheel dung san rieng
+        echo cho Windows ma link tai ve hien dang BI HONG ^(404^) - day la 1 van
+        echo de o phia upstream ^(GitHub release cua goi vieneu^), KHONG phai loi
+        echo cua may ban. Neu gap loi ve llama-cpp-python o tren:
+        echo   1. Bao lai cho nguoi phu trach du an ^(link wheel can duoc cap nhat
+        echo      hoac tao lai^), VA
+        echo   2. Tam thoi co the thu cai "Visual Studio Build Tools" ^(chon muc
+        echo      "Desktop development with C++"^) de uv/pip tu bien dich tu
+        echo      source thay vi dung wheel dung san:
+        echo      https://visualstudio.microsoft.com/visual-cpp-build-tools/
+        pause
+        exit /b 1
+    )
+    echo. > ".venv\.voxdirector_synced"
+    echo [OK] uv sync hoan tat.
+) else (
+    echo.
+    echo [2/6] Da chay "uv sync" tu truoc, bo qua ^(xoa .venv\.voxdirector_synced neu can dong bo lai^).
 )
-echo [OK] uv sync hoan tat.
 
 REM --- 3. Cai them dependencies rieng cho pipeline/ + voxdirector/ (agent) ---
 echo.
@@ -114,30 +131,61 @@ if errorlevel 1 (
     echo [OK] Da tim thay ffmpeg.
 )
 
-REM --- 5. Kiem tra GEMINI_API_KEY ---
+REM --- 5. Kiem tra / nhap GEMINI_API_KEY ---
+REM QUAN TRONG: chi CO 1 key duy nhat dung chung cho CA 4 Agent
+REM (Alpha/Beta/Gamma/Delta) - KHONG phai moi Agent 1 key rieng. Xem
+REM voxdirector/config.py (GEMINI_API_KEY/GEMINI_MODEL ghim cung, dung
+REM chung cho moi lenh goi qua llm_client.py) va Section 6.0/7 cua spec
+REM (moi Agent trong 1 lan chay PHAI dung cung 1 model/key, khong duoc
+REM auto-routing khac nhau, de ket qua tai lap duoc).
+REM
 REM Luu y ky thuat: "if A if B (...) else (...)" TRONG 1 lenh la 1 loi kinh
 REM dien cua batch - else se gan vao if B (ben trong), khong phai if A (ben
 REM ngoai), nen khi A la false thi CA 2 nhanh deu khong chay (da kiem chung
 REM that truoc khi sua). Dung 1 bien co trung gian de tranh loi nay.
+REM
+REM Nhap key truc tiep qua set /p (HIEN RA MAN HINH khi go, khong an ky
+REM tu) - da thu dung PowerShell Read-Host -AsSecureString de an ky tu
+REM nhung gap treo khi input khong phai tu console that (vd. khi test tu
+REM dong) va rui ro treo ca script that su kho luong truoc trong moi truong
+REM cmd.exe/Windows Terminal khac nhau - uu tien do tin cay hon, canh bao ro
+REM cho nguoi dung thay vi dung ky thuat chua kiem chung chac chan.
 echo.
 echo [5/6] Dang kiem tra GEMINI_API_KEY...
 set KEY_MISSING=0
 if "%GEMINI_API_KEY%"=="" if "%GOOGLE_API_KEY%"=="" set KEY_MISSING=1
+
 if "%KEY_MISSING%"=="1" (
     echo [CANH BAO] Chua thay bien moi truong GEMINI_API_KEY ^(hoac GOOGLE_API_KEY^).
-    echo Agent Alpha ^(tach chuong^) BAT BUOC can key nay - khong co se loi ngay khi chay Batch.
+    echo Ca 4 Agent ^(Alpha/Beta/Gamma/Delta^) DUNG CHUNG 1 key nay - Agent Alpha
+    echo ^(tach chuong^) BAT BUOC can key de chay Batch; Beta/Gamma/Delta van chay
+    echo duoc ma khong can key, chi bo qua phan lien quan Gemini cua rieng chung.
     echo.
-    echo Cach lay key: https://aistudio.google.com/apikey
-    echo Cach dat co dinh ^(chi can lam 1 lan, se nho cho nhung lan chay sau^):
-    echo     setx GEMINI_API_KEY "dan-key-cua-ban-vao-day"
-    echo Sau do DONG cua so nay, MO LAI, roi chay lai run.bat.
+    echo Lay key mien phi tai: https://aistudio.google.com/apikey
     echo.
-    echo ^(Co the bo qua canh bao nay va tiep tuc - Agent Beta/Gamma/Delta van chay duoc
-    echo   binh thuong ma khong can key, chi Agent Alpha se bao loi khi Batch.^)
+    echo LUU Y: key se HIEN RA MAN HINH khi ban go ^(khong an ky tu^) - can than
+    echo neu dang co nguoi khac nhin man hinh hoac dang chia se man hinh.
     echo.
-    pause
+    set /p ENTERED_KEY="Dan Gemini API key vao day roi Enter (de trong = bo qua): "
+    if not "!ENTERED_KEY!"=="" (
+        setx GEMINI_API_KEY "!ENTERED_KEY!" >nul
+        set "GEMINI_API_KEY=!ENTERED_KEY!"
+        echo [OK] Da luu GEMINI_API_KEY ^(setx - tu dong nho cho nhung lan chay sau, khong can nhap lai^).
+    ) else (
+        echo [BO QUA] Chua co key - Agent Alpha se bao loi khi chay Batch.
+        echo Co the chay lai run.bat sau khi co key.
+    )
 ) else (
-    echo [OK] Da tim thay GEMINI_API_KEY / GOOGLE_API_KEY.
+    echo [OK] Da tim thay GEMINI_API_KEY / GOOGLE_API_KEY ^(dung chung cho ca 4 Agent^).
+    set /p CHANGE_KEY="Doi sang key khac? (y/N): "
+    if /i "!CHANGE_KEY!"=="y" (
+        set /p ENTERED_KEY="Dan Gemini API key MOI vao day roi Enter: "
+        if not "!ENTERED_KEY!"=="" (
+            setx GEMINI_API_KEY "!ENTERED_KEY!" >nul
+            set "GEMINI_API_KEY=!ENTERED_KEY!"
+            echo [OK] Da cap nhat GEMINI_API_KEY.
+        )
+    )
 )
 
 REM --- 6. Khoi dong ung dung ---
