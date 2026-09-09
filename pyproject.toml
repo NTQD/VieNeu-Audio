@@ -64,7 +64,7 @@ requires-python = ">=3.10"
 dependencies = [
     "sea-g2p>=0.7.5",
     "onnxruntime>=1.20.0",
-    "llama-cpp-python==0.3.16",
+    "llama-cpp-python==0.3.19",
     "requests",
     "numpy",
     "soundfile",
@@ -150,8 +150,22 @@ lmdeploy = [
     { index = "pypi", marker = "sys_platform == 'darwin'" }
 ]
 
+# QUAN TRỌNG (2026-09-09): bản wheel Windows cũ (0.3.16, GitHub Release
+# "wheels-v0.3.16" của pnnbao97/VieNeu-TTS) đã BỊ XOÁ HOÀN TOÀN — xác nhận
+# qua GitHub API (release không còn tồn tại nữa, không phải chỉ mất 1
+# asset). PyPI chỉ có sdist cho 0.3.16 (không có wheel dựng sẵn nào), nên
+# không có cách nào khôi phục lại đúng bản cũ mà không cần compiler.
+#
+# Đổi sang bản CHÍNH THỨC mới nhất có wheel Windows còn sống —
+# llama-cpp-python 0.3.19 từ chính repo gốc abetlen/llama-cpp-python (không
+# phải bản build riêng của pnnbao97 nữa) — đã kiểm chứng THẬT trên máy CPU
+# này: cài thành công, load đúng model GGUF hiện có, chạy infer() ra RTF
+# ~0.68 (tương đương bản 0.3.16 cũ, RTF ~0.77), API Llama.from_pretrained()
+# với các kwarg pipeline/auto_tts.py đang dùng (n_gpu_layers, flash_attn,
+# repetitive_penalty, mlock, n_ctx) không lỗi. Cả 3 nguồn (win32, darwin,
+# pypi) đều xác nhận CÓ bản 0.3.19 trước khi ghim.
 llama-cpp-python = [
-    { url = "https://github.com/pnnbao97/VieNeu-TTS/releases/download/wheels-v0.3.16/llama_cpp_python-0.3.16-cp312-cp312-win_amd64.whl", marker = "sys_platform == 'win32' and python_version == '3.12'" },
+    { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.19/llama_cpp_python-0.3.19-cp312-cp312-win_amd64.whl", marker = "sys_platform == 'win32' and python_version == '3.12'" },
     { index = "llama-cpp-metal", marker = "sys_platform == 'darwin'" },
     { index = "pypi", marker = "sys_platform != 'win32' and sys_platform != 'darwin'" }
 ]
