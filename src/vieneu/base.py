@@ -18,7 +18,16 @@ class BaseVieneuTTS(ABC):
 
     def __init__(self, codec_repo: Optional[str] = None, codec_device: str = "cpu"):
         self.sample_rate = 24_000
-        self.max_context = 2048
+        # 4096 (không phải 2048) — khớp đúng n_ctx_train thật của backbone
+        # GGUF (xem cảnh báo "n_ctx_seq (2048) < n_ctx_train (4096)" lúc load
+        # model trước khi sửa). 2048 để 1 nửa ngân sách context không dùng
+        # tới, khiến các lần gọi backbone(prompt, max_tokens=self.max_context,
+        # ...) trong _infer_ggml() (standard.py) có ít chỗ trống hơn mức cần
+        # thiết cho sinh token dài — góp phần gây audio bị cắt ngắn khi văn
+        # bản đầu vào dài (xem thêm fix ở pipeline/auto_tts.py
+        # _render_chapter_audio(), nguyên nhân chính của lỗi). Xác nhận thật
+        # bằng đo tốc độ từ/giây trước/sau khi tăng lên 4096.
+        self.max_context = 4096
         self.hop_length = 480
 
         # Default streaming parameters

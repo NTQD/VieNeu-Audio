@@ -64,13 +64,6 @@ SAMPLE_TEXT = "rộng thêm 71,173.2 m, tức là hơn 71 km chỉ số GDP tăn
 # liên tục để so sánh bị chậm không cần thiết.
 PREVIEW_TEXT = "Xin chào, đây là giọng đọc thử để bạn tham khảo trước khi chọn."
 OUTPUT_DIR = os.path.join(project_root, "outputs")
-# Số phần (part) đưa vào engine.infer_batch() mỗi lần gọi — các phần trong 1
-# lô được pad chung 1 tensor và đưa qua backbone.generate() trong 1 lần gọi
-# (batch thật, không phải vòng lặp tuần tự) MIỄN LÀ backbone không phải bản
-# lượng tử hoá GGUF (xem init_tts() bên dưới). Lô nhỏ hơn = lưu file thường
-# xuyên hơn, ít mất việc hơn nếu mất kết nối giữa chừng; lô lớn hơn = ít
-# round-trip GPU hơn nhưng cũng tốn VRAM hơn cho 1 lần gọi.
-BATCH_GROUP_SIZE = 8
 # GHI CHÚ: bản SDK vieneu đang cài KHÔNG cho phép chỉnh repetition_penalty
 # qua engine.infer()/infer_batch() — backbone.generate() trong standard.py
 # gọi với danh sách tham số cố định (không đọc key này từ **kwargs), nên
@@ -190,8 +183,10 @@ def init_tts():
       src/vieneu/base.py đòi hỏi torch vô điều kiện, và codec ONNX không có
       encode_code() — SDK hiện tại không có đường torch-free nào cho việc
       encode giọng mới. Chỉ còn dùng được các giọng có sẵn (voices.json).
-    - MẤT batch thật trong infer_batch() (backbone GGUF xử lý tuần tự từng
-      phần dù BATCH_GROUP_SIZE gộp nhiều phần cùng lúc).
+    - MẤT batch thật trong infer_batch() (backbone GGUF luôn xử lý tuần tự
+      từng phần một, dù gọi infer_batch() với nhiều văn bản cùng lúc) — vì
+      vậy _render_chapter_audio() không còn gọi infer_batch() nữa, xem
+      comment ở đó (fix lỗi audio bị cắt ngắn khi văn bản 1 phần quá dài).
     Đổi lại: chạy được HOÀN TOÀN không cần cài torch/transformers/accelerate/
     neucodec — xem pipeline_requirements.txt. Đã kiểm chứng trên máy CPU này
     (scratch_check/test_cpu_synthesis.py): RTF ~0.77, tải model ~5-9s.
@@ -485,21 +480,36 @@ def _render_chapter_audio(chapter_text_norm, prefix, chapter_dir, progress_cb=No
 
     done_count = len(already_done)
     t_render_start = time.time()
-    # Render theo LÔ qua engine.infer_batch(): với backbone không lượng tử
-    # hoá (xem init_tts()), các phần trong 1 lô được pad chung thành 1 tensor
-    # và đưa qua backbone.generate() trong 1 lần gọi — batch thật, nhanh hơn
-    # nhiều trên GPU so với gọi infer() tuần tự từng phần.
-    for i in range(0, len(pending), BATCH_GROUP_SIZE):
-        group = pending[i:i + BATCH_GROUP_SIZE]
+    # QUAN TRỌNG (2026-09-09, fix lỗi audio "vô nghĩa"/bị cắt ngắn trong
+    # Batch): TRƯỚC ĐÂY gọi thẳng engine.infer_batch() với nguyên văn bản
+    # từng phần (tới 250 TỪ, tức có thể 1000-1200+ KÝ TỰ) trong 1 lần gọi
+    # _infer_ggml() duy nhất — nhưng infer()/infer_batch() của SDK (xem
+    # src/vieneu/standard.py) tự chia nhỏ văn bản theo max_chars=256 KÝ TỰ
+    # (qua split_text_into_chunks(), hoàn toàn khác _cấp_ với 250 TỪ ở đây)
+    # rồi mới đưa từng mảnh nhỏ qua model — infer_batch() gọi TRỰC TIẾP thì
+    # KHÔNG đi qua bước tự chia nhỏ an toàn này. Hệ quả: prompt quá dài so
+    # với ngân sách sinh token của 1 lần gọi backbone GGUF (n_ctx giới hạn),
+    # khiến model bị cắt ngang giữa chừng — audio ra nghe cụt/rối loạn dù
+    # không có lỗi nào được raise. Đã xác nhận THẬT bằng cách đo tốc độ
+    # từ/giây thực tế: ~250 từ/phần cho ra ~8-11 từ/giây (không thể là giọng
+    # nói thật, tốc độ tự nhiên ~3-5 từ/giây) khi gọi infer_batch() thẳng,
+    # nhưng ĐÚNG tốc độ khi gọi qua engine.infer() (tự chia theo max_chars).
+    #
+    # Fix: gọi engine.infer() cho TỪNG phần (KHÔNG dùng infer_batch() thẳng
+    # nữa) — infer() tự lo việc chia nhỏ an toàn + ghép lại liền mạch, nên
+    # 1 file .wav vẫn tương ứng ĐÚNG 1 "phần" 250-từ như trước (không đổi
+    # cấu trúc file mà subtitle_generator.py/Delta đang phụ thuộc vào), chỉ
+    # có khâu sinh audô BÊN TRONG mỗi phần là an toàn hơn. Với backbone GGUF
+    # (xem init_tts()), infer_batch() vốn dĩ cũng đã xử lý tuần tự từng mục
+    # một (không batch thật — xem comment trong standard.py), nên gọi
+    # infer() tuần tự ở đây không làm chậm thêm so với trước.
+    for part in pending:
         if progress_cb:
-            progress_cb(done_count, total_chunks, f"render lô {i // BATCH_GROUP_SIZE + 1} ({len(group)} phần)")
-        wavs = engine.infer_batch(
-            texts=[g["text"] for g in group], voice=selected_voice,
-        )
-        for part, audio in zip(group, wavs):
-            engine.save(audio, part["path"])
-            log += f"✅ {part['filename']} ({part['words']} từ)\n"
-            done_count += 1
+            progress_cb(done_count, total_chunks, f"render {part['filename']} ({part['words']} từ)")
+        audio = engine.infer(part["text"], voice=selected_voice)
+        engine.save(audio, part["path"])
+        log += f"✅ {part['filename']} ({part['words']} từ)\n"
+        done_count += 1
     render_elapsed = time.time() - t_render_start
 
     gc.collect()
