@@ -1038,7 +1038,7 @@ with gr.Blocks(title="VieNeu-TTS Auto Reader", theme=gr.themes.Soft()) as app:
             glossary_candidates_table = gr.Dataframe(
                 headers=["Term", "Entity Type", "Canonical Form", "Confidence", "Chương phát hiện"],
                 datatype=["str", "str", "str", "number", "number"],
-                row_count=(0, "dynamic"), col_count=(5, "fixed"), interactive=True,
+                row_count=(0, "dynamic"), column_count=(5, "fixed"), interactive=True,
                 label="Thuật ngữ mới chờ duyệt",
             )
             btn_approve_glossary = gr.Button("✅ Duyệt & Lưu vào Glossary", variant="primary")
