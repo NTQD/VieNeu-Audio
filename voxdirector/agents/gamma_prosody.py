@@ -17,8 +17,11 @@ src/vieneu/) — output của Gamma vẫn được sinh ra và log lại như me
 tự động chuyển giọng khi render audio ở bước hiện tại (xem graph.py).
 """
 
+from typing import Literal
+
 from pydantic import BaseModel
 
+from voxdirector.config import CONFIDENCE_THRESHOLD
 from voxdirector.llm_client import call_structured
 
 SYSTEM_PROMPT = """\
@@ -57,7 +60,11 @@ dụng nghiêm ngặt.
 
 class Segment(BaseModel):
     text: str
-    segment_type: str  # "narration" | "dialogue"
+    # Ghim Literal thay vì str tự do — bài học rút ra từ Agent Beta
+    # (entity_type để str tự do từng khiến Gemini tự chọn nhãn "organization"
+    # ngoài 3 giá trị glossary hỗ trợ). Ép JSON schema chỉ chấp nhận đúng 2
+    # giá trị system prompt đã mô tả, tránh Gemini tự sáng tạo nhãn khác.
+    segment_type: Literal["narration", "dialogue"]
     speaker_id: str | None = None
     confidence_score: float
 
@@ -68,8 +75,22 @@ class GammaOutput(BaseModel):
 
 def tag_segments(text_chunk: str) -> list[dict]:
     """Phân loại narration/dialogue + gán speaker_id cho 1 đoạn text (thường
-    là 1 chunk output của text_splitter.py). Trả về list[dict]."""
+    là 1 chunk output của text_splitter.py). Trả về list[dict].
+
+    Ép speaker_id=None nếu confidence_score < CONFIDENCE_THRESHOLD — đúng
+    theo Section 6.3 của spec ("Nếu dưới ngưỡng 0.75, để trống (null)
+    speaker_id thay vì đoán đại tên nhân vật"). System prompt đã yêu cầu
+    Gemini tự làm điều này, nhưng đây là bất biến xác định được bằng code
+    (giống fix CONFIDENCE_THRESHOLD ở Agent Alpha) — không nên chỉ tin tưởng
+    model luôn nhất quán tuân theo.
+    """
     if not text_chunk.strip():
         return []
     result: GammaOutput = call_structured(SYSTEM_PROMPT, text_chunk, GammaOutput)
-    return [s.model_dump() for s in result.segments]
+    segments = []
+    for s in result.segments:
+        d = s.model_dump()
+        if d["confidence_score"] < CONFIDENCE_THRESHOLD:
+            d["speaker_id"] = None
+        segments.append(d)
+    return segments
