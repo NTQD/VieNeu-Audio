@@ -73,6 +73,43 @@ REM log khong can thiet). Vi vay CHI chay "uv sync" 1 LAN DUY NHAT (danh dau
 REM bang file .venv\.voxdirector_synced) - nhung lan chay sau bo qua thang
 REM buoc nay. Neu ban vua sua pyproject.toml va can dong bo lai, xoa file
 REM danh dau nay (hoac xoa ca thu muc .venv) roi chay lai run.bat.
+REM
+REM Kiem tra .venv CON THUC SU CHAY DUOC khong truoc khi tin file danh dau -
+REM chi co file danh dau khong dam bao .venv van con lanh: "uv" tren Windows
+REM tao 1 file "trampoline" nho o .venv\Scripts\python.exe, tro toi ban
+REM Python that ma uv tu quan ly rieng ^(ngoai thu muc du an^) - neu ban
+REM Python do bi xoa mat sau do ^(vd. antivirus/don dep dia tu dong xoa
+REM nham^), trampoline con file nhung KHONG con chay duoc nua, dan den loi
+REM "Broken Python trampoline" - gap that tren may dong nghiep (2026-09-09).
+REM File danh dau van con nguyen ^(no chi ghi lai "da tung uv sync xong",
+REM khong tu kiem tra lai^), nen neu khong co buoc kiem tra suc khoe nay,
+REM script se BO QUA uv sync roi chay thang vao buoc 3 va gap dung loi do.
+if exist ".venv\.voxdirector_synced" (
+    ".venv\Scripts\python.exe" --version >nul 2>nul
+    if errorlevel 1 (
+        echo.
+        echo [CANH BAO] .venv co ve bi hong ^(Python trampoline khong con chay duoc^) - dang xoa va tao lai tu dau...
+        REM Dung "uv venv --clear" ^(co che chinh thuc cua uv^) thay vi tu
+        REM "rmdir /s /q" bang tay - da xac nhan that: rmdir CO THE am tham
+        REM chi xoa MOT PHAN thu muc ^(vd. neu 1 file ben trong dang bi khoa
+        REM boi tien trinh khac dang chay^), de lai .venv nua-xoa-nua-con ma
+        REM uv sync SAU DO se tu choi dung ^("not a valid Python environment"^)
+        REM thay vi tu sua - "uv venv --clear" xu ly viec xoa dang tin cay
+        REM hon. Neu buoc nay van that bai ^(vd. 1 chuong trinh khac dang mo
+        REM file ben trong .venv^), bao loi ro rang thay vi tiep tuc chay mu.
+        uv venv --clear
+        if errorlevel 1 (
+            echo.
+            echo [LOI] Khong xoa/tao lai duoc .venv - co the co chuong trinh khac
+            echo ^(terminal cu, antivirus, Explorer...^) dang mo file ben trong .venv.
+            echo Dong het cac cua so/terminal khac dang chay du an nay, hoac khoi
+            echo dong lai May tinh, roi chay lai run.bat.
+            pause
+            exit /b 1
+        )
+    )
+)
+
 if not exist ".venv\.voxdirector_synced" (
     echo.
     echo [2/6] Dang chay "uv sync" ^(lan dau co the mat vai phut - tai Python
