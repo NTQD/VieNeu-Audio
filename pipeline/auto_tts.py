@@ -1,5 +1,36 @@
 import os
 import sys
+
+# Môi trường Cloud Run (deployment PHỤ, chỉ để chứng minh có thể deploy công
+# khai — xem Section 11.7 của spec) tự set biến K_SERVICE trên MỌI container,
+# không cần tự khai báo gì thêm; máy local (deployment CHÍNH, chạy demo thật)
+# không bao giờ có biến này. Dùng để BẬT cơ chế cache model qua Google Cloud
+# Storage CHỈ khi thật sự đang chạy trên Cloud Run — trên máy local, model
+# tải thẳng từ Hugging Face Hub và tự cache vào đĩa cục bộ theo cơ chế mặc
+# định của huggingface_hub (đĩa local KHÔNG bị xoá giữa các lần chạy như
+# container Cloud Run, nên không cần tự tay quản lý cache như dưới đây).
+_RUNNING_ON_CLOUD_RUN = bool(os.environ.get("K_SERVICE"))
+
+if _RUNNING_ON_CLOUD_RUN:
+    # QUAN TRỌNG: phải set TRƯỚC bất kỳ import nào có thể kéo theo
+    # huggingface_hub (vd. `from vieneu import Vieneu` bên dưới) —
+    # huggingface_hub đọc biến môi trường này 1 LẦN DUY NHẤT lúc chính module
+    # huggingface_hub.constants được import lần đầu (gán vào hằng số
+    # module-level), set trễ hơn sẽ không có tác dụng. Trỏ cache vào thư mục
+    # sẽ được nạp từ Google Cloud Storage (xem _ensure_local_model bên dưới)
+    # thay vì thư mục mặc định trong container — tránh phải tải lại model từ
+    # Hugging Face Hub mỗi lần Cloud Run cold start (container hoàn toàn mới
+    # mỗi lần scale từ 0, không giữ lại gì giữa các lần).
+    os.environ.setdefault("HF_HUB_CACHE", os.path.join(
+        os.environ.get("VOXDIRECTOR_MODEL_CACHE", "/tmp/voxdirector_models"), "hub",
+    ))
+    # Sau khi cache đã được nạp từ GCS (trong _ensure_local_model), ép mọi
+    # lệnh gọi from_pretrained() chỉ đọc cache local, KHÔNG gọi mạng ra
+    # Hugging Face Hub kể cả để kiểm tra bản cập nhật (mặc định vẫn gọi 1
+    # HEAD request dù đã có cache) — vừa nhanh hơn, vừa không phụ thuộc
+    # Hugging Face lúc runtime.
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
 import re
 import gc
 import time
@@ -19,6 +50,7 @@ for p in [current_dir, project_root, src_path]:
 from text_splitter import split_text_for_tts
 from text_normalizer import normalize_text_for_tts
 from vieneu import Vieneu
+from voxdirector.device_utils import detect_device
 
 # ===== GLOBAL STATE =====
 tts = None
@@ -32,16 +64,20 @@ SAMPLE_TEXT = "rộng thêm 71,173.2 m, tức là hơn 71 km chỉ số GDP tăn
 # liên tục để so sánh bị chậm không cần thiết.
 PREVIEW_TEXT = "Xin chào, đây là giọng đọc thử để bạn tham khảo trước khi chọn."
 OUTPUT_DIR = os.path.join(project_root, "outputs")
-# Số phần (part) đưa vào engine.infer_batch() mỗi lần gọi. Trên GPU, các phần
-# trong 1 lô được gộp vào cùng forward pass thay vì chạy tuần tự từng phần
-# (nhanh hơn nhiều trên Colab T4). Lô nhỏ hơn = lưu file thường xuyên hơn, ít
-# mất việc hơn nếu mất kết nối giữa chừng; lô lớn hơn = ít round-trip GPU hơn.
+# Số phần (part) đưa vào engine.infer_batch() mỗi lần gọi — các phần trong 1
+# lô được pad chung 1 tensor và đưa qua backbone.generate() trong 1 lần gọi
+# (batch thật, không phải vòng lặp tuần tự) MIỄN LÀ backbone không phải bản
+# lượng tử hoá GGUF (xem init_tts() bên dưới). Lô nhỏ hơn = lưu file thường
+# xuyên hơn, ít mất việc hơn nếu mất kết nối giữa chừng; lô lớn hơn = ít
+# round-trip GPU hơn nhưng cũng tốn VRAM hơn cho 1 lần gọi.
 BATCH_GROUP_SIZE = 8
-# Mặc định SDK là 1.2. Tăng nhẹ để giảm hiện tượng model tự lặp lại 1 cụm từ
-# (vd. "cao nhất tầng trời cao nhất tầng trời") khi sinh audio. THAM SỐ THỬ
-# NGHIỆM — v3 Turbo còn early access nên không đảm bảo hết lặp hoàn toàn;
-# nếu giọng đọc nghe cứng/mất tự nhiên hơn, hạ dần về gần 1.2.
-REPETITION_PENALTY = 1.3
+# GHI CHÚ: bản SDK vieneu đang cài KHÔNG cho phép chỉnh repetition_penalty
+# qua engine.infer()/infer_batch() — backbone.generate() trong standard.py
+# gọi với danh sách tham số cố định (không đọc key này từ **kwargs), nên
+# không có cách nào set từ pipeline/ mà không sửa trực tiếp gói SDK bên thứ
+# 3 (không nên làm, vì bản cài qua `pip install vieneu` trên Colab sẽ không
+# có sửa đổi đó). Nếu lặp từ vẫn xảy ra, hướng khắc phục thực tế duy nhất
+# hiện tại là báo lên tác giả VieNeu-TTS để họ mở tham số này trong SDK.
 # Font phụ đề ép dùng trên Linux/Colab — nơi font "Arial" mặc định trong ASS
 # không tồn tại, khiến fontconfig có thể chọn nhầm 1 font thiếu dấu tiếng
 # Việt (chữ có dấu hiển thị thành ô vuông). Cần cài font này qua apt trong
@@ -54,19 +90,139 @@ LINUX_SUBTITLE_FONT = "Noto Sans"
 # gốc thay vì tự đóng gói lại, và cache 1 lần sau khi tải.
 NGOC_HUYEN_URL = "https://raw.githubusercontent.com/pnnbao97/VieNeu-TTS/main/examples/audio_ref/example_ngoc_huyen.wav"
 NGOC_HUYEN_CACHE = os.path.join(project_root, ".voice_cache", "ngoc_huyen.wav")
+# Transcript chính xác của audio mẫu trên, lấy từ examples/main.py của kho gốc
+# — encode_reference() của engine "standard" không tự nhận diện nội dung audio
+# mẫu, engine BẮT BUỘC cần transcript đi kèm (xem _resolve_ref_voice trong SDK).
+NGOC_HUYEN_REF_TEXT = "Tác phẩm dự thi bảo đảm tính khoa học, tính đảng, tính chiến đấu, tính định hướng."
+
+# Backbone + codec được nạp từ Google Cloud Storage thay vì tải trực tiếp từ
+# Hugging Face Hub mỗi lần container khởi động lại — trên Cloud Run, mỗi lần
+# scale-to-zero rồi có traffic mới đều tạo container HOÀN TOÀN MỚI (không có
+# gì được cache lại giữa các lần), nên trước đây MỖI cold start phải tải lại
+# ~1.7GB từ Hugging Face qua mạng ngoài (đã quan sát thấy chậm/đôi khi treo).
+# GCS cùng region với Cloud Run đi qua mạng nội bộ Google — nhanh và ổn định
+# hơn nhiều.
+#
+# Cách làm: mirror ĐÚNG cấu trúc thư mục cache mặc định của huggingface_hub
+# (`{HF_HUB_CACHE}/models--{org}--{repo}/{refs,snapshots}/...`) lên GCS, tải
+# về đúng vị trí đó lúc cold start, rồi gọi Vieneu(...) với backbone_repo/
+# codec_repo GIỮ NGUYÊN repo_id gốc (không đổi thành local path) — vì
+# base.py._load_codec() so khớp CHUỖI CHÍNH XÁC với "neuphonic/distill-
+# neucodec" để chọn class DistillNeuCodec, một local path tuỳ ý sẽ không
+# khớp và bị raise ValueError. Với cache đã có sẵn đúng chỗ + HF_HUB_OFFLINE=1
+# (set ở đầu file), from_pretrained() tự đọc từ local cache, không gọi mạng.
+#
+# Model đã được tải sẵn 1 lần (từ máy dev, có HF_TOKEN hợp lệ) và upload lên
+# gs://voxdirector-ai-models/hf-cache/hub/ — không tự động hoá bước upload
+# này, chỉ cần làm lại khi đổi sang bản model khác.
+GCS_MODELS_BUCKET = os.environ.get("VOXDIRECTOR_MODELS_BUCKET", "voxdirector-ai-models")
+GCS_HF_CACHE_PREFIX = "hf-cache/hub"
+# Chỉ có giá trị thật khi _RUNNING_ON_CLOUD_RUN (xem đầu file) — trên máy
+# local, biến này không được set, và _ensure_local_model() cũng không bao
+# giờ được gọi (xem init_tts()), nên None ở đây vô hại.
+HF_HUB_CACHE_DIR = os.environ.get("HF_HUB_CACHE")
 
 
-def detect_chapter_range(text):
-    matches = re.findall(r'[Cc]h(?:ương|apter)\s*(\d+)', text)
-    if not matches: return None
-    nums = sorted([int(m) for m in matches])
-    if len(nums) == 1: return f"{nums[0]}"
-    return f"{nums[0]}-{nums[-1]}"
+def _ensure_local_model(hf_repo_id):
+    """CHỈ dùng khi chạy trên Cloud Run (xem _RUNNING_ON_CLOUD_RUN đầu file
+    và lời gọi trong init_tts() bên dưới) — trên máy local, model tải thẳng
+    từ Hugging Face Hub qua from_pretrained() bình thường, dùng cache mặc
+    định của huggingface_hub trên đĩa (không bị xoá giữa các lần chạy như
+    container Cloud Run nên không cần tự quản lý).
+
+    Tải model `{org}/{repo}` từ gs://{GCS_MODELS_BUCKET}/{GCS_HF_CACHE_PREFIX}/
+    về đúng vị trí cache local mà huggingface_hub sẽ tự tìm tới (nếu chưa có).
+
+    Đánh dấu ĐÃ TẢI XONG bằng 1 file marker — tránh tải lại nếu container này
+    đã tải trước đó trong CÙNG vòng đời (instance được tái sử dụng cho nhiều
+    request liên tiếp, không phải cold start mới)."""
+    cache_folder_name = "models--" + hf_repo_id.replace("/", "--")
+    local_dir = os.path.join(HF_HUB_CACHE_DIR, cache_folder_name)
+    marker = os.path.join(local_dir, ".download_complete")
+    if os.path.isfile(marker):
+        return
+
+    from google.cloud import storage
+    client = storage.Client()
+    bucket = client.bucket(GCS_MODELS_BUCKET)
+    prefix = f"{GCS_HF_CACHE_PREFIX}/{cache_folder_name}/"
+    blobs = list(bucket.list_blobs(prefix=prefix))
+    if not blobs:
+        raise RuntimeError(f"Không tìm thấy model tại gs://{GCS_MODELS_BUCKET}/{prefix}")
+
+    for blob in blobs:
+        rel_path = blob.name[len(prefix):]
+        if not rel_path:
+            continue
+        dest_path = os.path.join(local_dir, rel_path)
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        blob.download_to_filename(dest_path)
+
+    with open(marker, "w") as f:
+        f.write("ok")
+
+
+def _load_source_text(path):
+    """Đọc văn bản gốc từ file .txt hoặc .docx, luôn trả về plain text.
+
+    .docx: chỉ trích xuất text thuần (nối các đoạn không rỗng bằng \\n) —
+    KHÔNG cố giữ định dạng (bold/italic/heading style). Cấu trúc chương do
+    Agent Alpha xử lý ở bước sau, không dựa vào Word heading style.
+    """
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".docx":
+        import docx
+        doc = docx.Document(path)
+        return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+    with open(path, 'r', encoding='utf-8') as f:
+        return f.read()
+
 
 def init_tts():
+    """Khởi tạo engine VieNeu-TTS, cache lại (chỉ tải model 1 lần).
+
+    QUYẾT ĐỊNH (2026-09-08): dùng ĐÚNG mặc định của SDK — backbone GGUF lượng
+    tử hoá (llama-cpp-python) + codec ONNX
+    ("neuphonic/neucodec-onnx-decoder-int8", onnxruntime) — KHÔNG override
+    codec_repo/gguf_filename như trước nữa. Đổi lại so với bản trước
+    (backbone không lượng tử hoá + codec torch "neuphonic/distill-neucodec"):
+    - MẤT Voice Cloning từ audio tham chiếu tự do: encode_reference() trong
+      src/vieneu/base.py đòi hỏi torch vô điều kiện, và codec ONNX không có
+      encode_code() — SDK hiện tại không có đường torch-free nào cho việc
+      encode giọng mới. Chỉ còn dùng được các giọng có sẵn (voices.json).
+    - MẤT batch thật trong infer_batch() (backbone GGUF xử lý tuần tự từng
+      phần dù BATCH_GROUP_SIZE gộp nhiều phần cùng lúc).
+    Đổi lại: chạy được HOÀN TOÀN không cần cài torch/transformers/accelerate/
+    neucodec — xem pipeline_requirements.txt. Đã kiểm chứng trên máy CPU này
+    (scratch_check/test_cpu_synthesis.py): RTF ~0.77, tải model ~5-9s.
+
+    backbone_repo GIỮ NGUYÊN repo_id gốc trong mọi trường hợp. Trên Cloud Run:
+    cache local đã được nạp sẵn từ GCS (xem _ensure_local_model +
+    HF_HUB_CACHE/HF_HUB_OFFLINE ở đầu file) nên from_pretrained() tự đọc từ
+    đó, không gọi mạng ra Hugging Face Hub. Trên máy local (đường dẫn demo
+    chính — xem Section 11.7 của spec): bỏ qua bước GCS hoàn toàn,
+    from_pretrained() tải thẳng từ Hugging Face Hub lần đầu rồi tự cache vào
+    đĩa cục bộ theo cơ chế mặc định.
+
+    LƯU Ý CHƯA DỌN (ngoài phạm vi phiên làm việc này — chỉ làm local, không
+    đụng Cloud Run/Docker): _ensure_local_model() bên dưới vẫn đang pre-fetch
+    "neuphonic/distill-neucodec" + "ntu-spml/distilhubert" cho nhánh Cloud
+    Run — 2 model này giờ KHÔNG còn được dùng nữa (đã đổi codec_repo ở trên),
+    nên trên Cloud Run bước này chỉ tốn thời gian/băng thông vô ích chứ không
+    gây lỗi. Cần dọn lại cùng lúc với Dockerfile/GCS trong 1 phiên tập trung
+    vào Cloud Run riêng.
+    """
     global tts
     if tts is None:
-        tts = Vieneu(emotion="storytelling")
+        device = detect_device()
+        if _RUNNING_ON_CLOUD_RUN:
+            _ensure_local_model("pnnbao-ump/VieNeu-TTS-v2")
+            _ensure_local_model("neuphonic/distill-neucodec")
+            _ensure_local_model("ntu-spml/distilhubert")
+        tts = Vieneu(
+            emotion="storytelling",
+            backbone_device=device,
+        )
     return tts
 
 def load_preset_voices():
@@ -121,27 +277,44 @@ def generate_sample():
 def fetch_ngoc_huyen_sample():
     """Tải audio mẫu Ngọc Huyền (ví dụ chính thức trong kho VieNeu-TTS) về
     máy 1 lần rồi dùng lại từ cache, để điền sẵn vào ô audio mẫu cho Voice
-    Cloning bên dưới."""
+    Cloning bên dưới. Điền kèm luôn transcript chính xác của audio mẫu này
+    (lấy từ examples/main.py của kho gốc) vì engine bắt buộc cần transcript."""
     try:
         if not os.path.isfile(NGOC_HUYEN_CACHE):
             os.makedirs(os.path.dirname(NGOC_HUYEN_CACHE), exist_ok=True)
             urllib.request.urlretrieve(NGOC_HUYEN_URL, NGOC_HUYEN_CACHE)
     except Exception as e:
-        return None, f"❌ Lỗi tải giọng mẫu Ngọc Huyền: {e}"
-    return NGOC_HUYEN_CACHE, "✅ Đã tải giọng mẫu Ngọc Huyền — bấm \"Nhân bản & Nghe thử\" bên dưới."
+        return None, None, f"❌ Lỗi tải giọng mẫu Ngọc Huyền: {e}"
+    return NGOC_HUYEN_CACHE, NGOC_HUYEN_REF_TEXT, "✅ Đã tải giọng mẫu Ngọc Huyền — bấm \"Nhân bản & Nghe thử\" bên dưới."
 
-def clone_and_preview(audio_path):
-    """Nhân bản giọng từ 1 audio mẫu 3-5 giây (v3 Turbo nhân bản trực tiếp
-    từ audio, không cần nhập nội dung) và đọc thử ngay bằng câu ngắn để
-    kiểm tra nhanh trước khi xác nhận dùng giọng này."""
+def clone_and_preview(audio_path, ref_text):
+    """Nhân bản giọng từ 1 audio mẫu 3-10 giây + transcript của audio đó, rồi
+    đọc thử ngay bằng câu ngắn để kiểm tra nhanh trước khi xác nhận dùng
+    giọng này.
+
+    engine.encode_reference() chỉ mã hoá audio thành ref_codes — nó KHÔNG tự
+    nhận diện nội dung audio, nên bắt buộc phải có transcript đi kèm (dùng
+    trong _resolve_ref_voice của SDK để suy ra ref_phonemes). Không có
+    transcript, engine.infer()/infer_batch() sẽ báo lỗi "Must provide either
+    'voice' dict or both 'ref_codes' and 'ref_text'."
+    """
     if not audio_path or not os.path.isfile(audio_path):
         return None, None, "❌ Chưa có audio mẫu để nhân bản."
+    if not ref_text or not ref_text.strip():
+        return None, None, "❌ Cần nhập transcript (nội dung chính xác) của audio mẫu."
     engine = init_tts()
     try:
-        speaker_emb, ref_codes = engine.encode_reference(audio_path, denoise=True)
+        ref_codes = engine.encode_reference(audio_path)
+    except ImportError:
+        # Quyết định 2026-09-08: init_tts() dùng codec ONNX torch-free mặc
+        # định của SDK (xem docstring init_tts()) — encode_reference() đòi
+        # hỏi torch vô điều kiện nên KHÔNG còn khả dụng ở cấu hình này. Bắt
+        # riêng ImportError để không lộ thông báo tiếng Anh "install torch"
+        # khó hiểu ra giao diện.
+        return None, None, "❌ Tính năng nhân bản giọng từ audio mẫu hiện không khả dụng trên cấu hình CPU (torch-free) đang dùng — chỉ dùng được các giọng có sẵn."
     except Exception as e:
         return None, None, f"❌ Lỗi nhân bản giọng: {e}"
-    voice_data = {"speaker_emb": speaker_emb, "codes": ref_codes}
+    voice_data = {"codes": ref_codes, "text": ref_text.strip()}
     sample = _synthesize_sample(voice_data, PREVIEW_TEXT)
     return voice_data, sample, "✅ Đã nhân bản giọng — nghe thử ở trên, bấm \"Xác nhận\" nếu ưng ý."
 
@@ -154,24 +327,96 @@ def confirm_cloned_voice(cloned_voice):
     return "✅ Đã xác nhận dùng giọng nhân bản.", gr.Tabs(selected=1)
 
 
-def _chapter_dir_for(text_norm, source_path=None):
-    """Suy ra (prefix, chapter_dir, chapter_num) từ text đã normalize, dùng chung cho mọi bước.
+def _apply_beta(chapter_text, chapter_number):
+    """Chạy Agent Beta (giữ nhất quán tên riêng/thuật ngữ qua glossary
+    RAG/ChromaDB) trên 1 chương ĐÃ được Agent Alpha tách sẵn, TRƯỚC khi
+    normalize_text_for_tts() — đúng theo thứ tự Alpha -> Beta -> normalizer
+    hiện có (xem voxdirector/agents/beta_consistency.py).
 
-    Khi KHÔNG tìm thấy "Chương N" / "Chapter N" trong text (chapter_num = None),
-    KHÔNG dùng chung 1 thư mục "part" tĩnh cho mọi file — làm vậy thì 2 chương
-    khác nhau không có tiêu đề sẽ bị ghi đè/trộn lẫn vào cùng thư mục, và với
-    cơ chế resume (bỏ qua file .wav đã có) thì chương thứ 2 còn có thể bị coi
-    nhầm là "đã render xong" bằng nội dung của chương thứ 1. Thay vào đó, dùng
-    tên file nguồn làm phần phân biệt.
+    Nếu chưa cấu hình GEMINI_API_KEY hoặc lệnh gọi Gemini lỗi: BỎ QUA Beta
+    và dùng nguyên text của Alpha — Beta là bước NÂNG CAO tuỳ chọn (cần API
+    key trả phí/free-tier bên ngoài), không được phép chặn pipeline chính
+    nếu chưa cấu hình hoặc tạm thời lỗi mạng/API.
+
+    Trả về (corrected_text, log_note, new_entry_candidates) — candidates là
+    list[dict] (mỗi dict tự mang thêm "chapter_number") CHƯA được ghi vào
+    glossary, để UI (panel "📖 Duyệt Glossary") gom lại cho người dùng xác
+    nhận sau — xem process_batch() và approve_glossary_candidates().
     """
-    chapter_num = detect_chapter_range(text_norm)
-    if chapter_num:
-        prefix = f"C_{chapter_num}"
+    from voxdirector.config import GEMINI_API_KEY
+    if not GEMINI_API_KEY:
+        return chapter_text, "⏭️ Agent Beta: bỏ qua (chưa cấu hình GEMINI_API_KEY).\n", []
+    try:
+        from voxdirector.agents.beta_consistency import run_beta
+        result = run_beta(chapter_text, chapter_number=chapter_number)
+        candidates = result.get("new_entry_candidates", [])
+        for c in candidates:
+            c["chapter_number"] = chapter_number
+        n_applied = len(result.get("applied_terms", []))
+        note = (
+            f"🔤 Agent Beta: áp dụng {n_applied} thuật ngữ đã biết từ glossary, "
+            f"phát hiện {len(candidates)} thuật ngữ mới (chưa tự thêm vào glossary, cần xác nhận — xem panel Duyệt Glossary).\n"
+        )
+        return result["corrected_text"], note, candidates
+    except Exception as e:
+        return chapter_text, f"⚠️ Agent Beta lỗi ({e}) — dùng nguyên text gốc từ Agent Alpha, bỏ qua bước này.\n", []
+
+
+def _apply_delta(chapter_dir, prefix, chunks):
+    """Chạy Agent Delta (QA đối chiếu ASR round-trip, faster-whisper + jiwer)
+    SAU KHI audio của chương đã ghép xong — ghi {prefix}_qa_report.json vào
+    chapter_dir để người dùng xem lại (xem voxdirector/agents/delta_qa.py).
+
+    faster-whisper/jiwer là dependency MỚI (xem pipeline_requirements.txt),
+    chưa chắc đã cài — nếu thiếu, BỎ QUA Delta hoàn toàn thay vì lỗi cả
+    chương vừa render xong.
+
+    Trả về log_note.
+    """
+    try:
+        from voxdirector.agents.delta_qa import summarize_qa_report, verify_chapter_quality
+    except ImportError as e:
+        return f"⏭️ Agent Delta: bỏ qua (chưa cài faster-whisper/jiwer — {e}).\n"
+    try:
+        qa_report = verify_chapter_quality(chapter_dir, prefix, chunks)
+        import json
+        qa_path = os.path.join(chapter_dir, f"{prefix}_qa_report.json")
+        with open(qa_path, "w", encoding="utf-8") as f:
+            json.dump(qa_report, f, ensure_ascii=False, indent=2)
+        summary = summarize_qa_report(qa_report)
+        return f"🩺 Agent Delta: {summary}\n"
+    except Exception as e:
+        return f"⚠️ Agent Delta lỗi ({e}) — bỏ qua bước QA cho chương này.\n"
+
+
+def _extract_chapter_label(chapter_text):
+    """Tìm nhãn "Chương N"/"Chapter N" NGAY TRONG 1 chương ĐÃ được Agent
+    Alpha phân tách sẵn — chỉ để đặt tên thư mục cho dễ nhận biết, KHÔNG
+    dùng để tách chương (Alpha đảm nhiệm việc đó hoàn toàn, xem
+    voxdirector/agents/alpha_ingestion.py). Chỉ quét ~200 ký tự đầu vì
+    heading (nếu có) luôn nằm ở đầu chương."""
+    m = re.search(r'[Cc]h(?:ương|apter)\s*(\d+)', chapter_text[:200])
+    return m.group(1) if m else None
+
+def _chapter_dir_for(chapter_text, source_path=None, chapter_idx=0, total_in_file=1):
+    """Suy ra (prefix, chapter_dir, label) cho 1 chương ĐÃ được Agent Alpha
+    phân tách sẵn từ raw_text của 1 file upload.
+
+    Khi KHÔNG tìm thấy "Chương N" / "Chapter N" trong text (label = None),
+    KHÔNG dùng chung 1 thư mục "part" tĩnh cho mọi chương không tiêu đề —
+    làm vậy thì 2 chương khác nhau sẽ bị ghi đè/trộn lẫn vào cùng thư mục, và
+    với cơ chế resume (bỏ qua file .wav đã có) thì chương thứ 2 còn có thể bị
+    coi nhầm là "đã render xong" bằng nội dung của chương thứ 1. Thay vào đó,
+    dùng tên file nguồn + số thứ tự chương trong file đó làm phần phân biệt.
+    """
+    label = _extract_chapter_label(chapter_text)
+    if label:
+        prefix = f"C_{label}"
     else:
         base = os.path.splitext(os.path.basename(source_path))[0] if source_path else "unknown"
         base = re.sub(r'[^\w\-]+', '_', base).strip('_') or "unknown"
-        prefix = f"part_{base}"
-    return prefix, os.path.join(OUTPUT_DIR, prefix), chapter_num
+        prefix = f"part_{base}" if total_in_file <= 1 else f"part_{base}_{chapter_idx + 1}"
+    return prefix, os.path.join(OUTPUT_DIR, prefix), label
 
 def _is_chapter_complete(chapter_dir, prefix, want_video):
     """Chương coi là XONG nếu: có ảnh nền -> đã có video; không có ảnh nền ->
@@ -183,47 +428,42 @@ def _is_chapter_complete(chapter_dir, prefix, want_video):
         p = os.path.join(chapter_dir, f"{prefix}_merged.srt")
     return os.path.isfile(p) and os.path.getsize(p) > 0
 
-def _render_chapter_audio(text_file_path, progress_cb=None):
-    """Bước 3: normalize -> chia phần -> render audio (batch GPU, có resume).
+def _render_chapter_audio(chapter_text_norm, prefix, chapter_dir, progress_cb=None):
+    """Bước 3: chia phần -> render audio (batch GPU, có resume).
+
+    chapter_text_norm: text của ĐÚNG 1 chương — đã được Agent Alpha phân
+    tách khỏi raw_text của file upload (xem _process_chapter_e2e) và đã
+    normalize_text_for_tts(). Hàm này KHÔNG còn tự tách chương/normalize gì
+    thêm — trước đây có 1 vòng tách "Chương N" bằng regex ngay trong hàm
+    này, giờ đã bỏ hẳn vì Agent Alpha đã tách chương từ sớm hơn, ở mức toàn
+    bộ raw_text của file, chính xác hơn (xử lý được cả văn bản không có
+    heading tường minh).
 
     progress_cb(done, total, desc), nếu có, được gọi sau mỗi lô render.
-    Trả về (chapter_dir, prefix, log, generated_files, total_chunks).
+    Trả về (log, generated_files, total_chunks).
     """
     if selected_voice is None:
         raise RuntimeError("Chưa chọn giọng. Quay lại Bước 1.")
-    if not os.path.exists(text_file_path):
-        raise RuntimeError(f"Không tìm thấy file: {text_file_path}")
+    if not chapter_text_norm.strip():
+        raise RuntimeError("Chương trống.")
 
-    with open(text_file_path, 'r', encoding='utf-8') as f:
-        text = f.read()
-    if not text.strip():
-        raise RuntimeError("File trống.")
-
-    text = normalize_text_for_tts(text)
     engine = init_tts()
-
-    prefix, chapter_dir, chapter_num = _chapter_dir_for(text, source_path=text_file_path)
     os.makedirs(chapter_dir, exist_ok=True)
 
     # Lưu text gốc vào thư mục chương để subtitle_generator dùng
     text_save_path = os.path.join(chapter_dir, f"{prefix}.txt")
     with open(text_save_path, "w", encoding="utf-8") as tf:
-        tf.write(text)
+        tf.write(chapter_text_norm)
 
-    # Chia nhỏ văn bản theo chương
-    chapter_texts = re.split(r'(?i)(?=[Cc]h(?:ương|apter)\s*\d+)', text)
-    chapter_texts = [c.strip() for c in chapter_texts if c.strip()]
-    if not chapter_texts:
-        chapter_texts = [text]
-
-    # Liệt kê TOÀN BỘ các phần cần có trước, kèm đường dẫn file đích.
+    # Liệt kê TOÀN BỘ các phần cần có trước, kèm đường dẫn file đích. Không
+    # còn 2 cấp "chương trong file / phần trong chương" như trước — mỗi thư
+    # mục giờ LUÔN LÀ đúng 1 chương (Agent Alpha đảm bảo điều này), nên chỉ
+    # còn 1 cấp "phần trong chương".
     all_parts = []
-    for c_idx, chap_text in enumerate(chapter_texts):
-        chunks = split_text_for_tts(chap_text, 250)
-        for p_idx, chunk in enumerate(chunks):
-            filename = f"{prefix}_c{c_idx+1:02d}_p{p_idx+1:02d}.wav"
-            output_file = os.path.abspath(os.path.join(chapter_dir, filename))
-            all_parts.append({"filename": filename, "path": output_file, "text": chunk, "words": len(chunk.split())})
+    for p_idx, chunk in enumerate(split_text_for_tts(chapter_text_norm, 250)):
+        filename = f"{prefix}_p{p_idx+1:02d}.wav"
+        output_file = os.path.abspath(os.path.join(chapter_dir, filename))
+        all_parts.append({"filename": filename, "path": output_file, "text": chunk, "words": len(chunk.split())})
 
     total_chunks = len(all_parts)
 
@@ -235,25 +475,19 @@ def _render_chapter_audio(text_file_path, progress_cb=None):
 
     log = f"📖 Chương {prefix} — {total_chunks} phần"
     log += f" ({len(already_done)} đã render sẵn, bỏ qua)\n" if already_done else "\n"
-    if chapter_num is None:
-        log += (
-            f"⚠️ Không tìm thấy \"Chương N\" / \"Chapter N\" trong văn bản — "
-            f"dùng tên file làm thư mục ({prefix}) để tránh trộn lẫn với chương khác. "
-            f"Nên thêm tiêu đề chương vào đầu file nếu có thể.\n"
-        )
 
     done_count = len(already_done)
     t_render_start = time.time()
-    # Render theo LÔ qua engine.infer_batch(): trên GPU các phần trong 1 lô
-    # được gộp chung 1 forward pass (nhanh hơn nhiều so với gọi infer() tuần
-    # tự từng phần); trên CPU vẫn chạy đúng, chỉ là tuần tự bên trong SDK.
+    # Render theo LÔ qua engine.infer_batch(): với backbone không lượng tử
+    # hoá (xem init_tts()), các phần trong 1 lô được pad chung thành 1 tensor
+    # và đưa qua backbone.generate() trong 1 lần gọi — batch thật, nhanh hơn
+    # nhiều trên GPU so với gọi infer() tuần tự từng phần.
     for i in range(0, len(pending), BATCH_GROUP_SIZE):
         group = pending[i:i + BATCH_GROUP_SIZE]
         if progress_cb:
             progress_cb(done_count, total_chunks, f"render lô {i // BATCH_GROUP_SIZE + 1} ({len(group)} phần)")
         wavs = engine.infer_batch(
             texts=[g["text"] for g in group], voice=selected_voice,
-            repetition_penalty=REPETITION_PENALTY,
         )
         for part, audio in zip(group, wavs):
             engine.save(audio, part["path"])
@@ -265,26 +499,26 @@ def _render_chapter_audio(text_file_path, progress_cb=None):
     generated_files = [p["path"] for p in all_parts]
     log += f"🎉 Audio xong: {total_chunks} file .wav\n"
     log += f"⏱️ Render audio: {render_elapsed:.1f}s ({len(pending)} phần mới)\n"
-    return chapter_dir, prefix, log, generated_files, total_chunks
+    return log, generated_files, total_chunks
 
-def _run_postprocess_core(text_file_path, bgm_path, bgm_volume, silence_dur, bg_image_path, font_size,
+def _run_postprocess_core(chapter_dir, prefix, chapter_text_norm, bgm_path, bgm_volume, silence_dur, bg_image_path, font_size,
                            progress_cb=None, burn_subtitles=True):
     """Bước 4: ghép audio -> trộn BGM (nếu có) -> tạo phụ đề -> render video (nếu có ảnh nền).
+
+    chapter_dir/prefix: do caller (_process_chapter_e2e) truyền vào — không
+    tự suy lại từ file path nữa (trước đây đọc lại text_file_path và tự gọi
+    _chapter_dir_for lần 2, dư thừa so với lần gọi ở Bước 3 và có thể lệch
+    nếu logic tách chương thay đổi giữa 2 lần gọi).
 
     progress_cb(fraction 0..1, desc), nếu có, được gọi ở mỗi giai đoạn.
     burn_subtitles=False: bỏ qua bước ghi cứng phụ đề (nhanh hơn nhiều) —
     vẫn tạo ra video (ảnh nền + audio) và file .srt riêng để tự upload lên
     YouTube làm phụ đề (Video > Phụ đề) thay vì ghi cứng vào hình.
-    Trả về (chapter_dir, prefix, log, video_path_or_None).
+    Trả về (log, video_path_or_None).
     """
     from audio_postprocess import get_ffmpeg, get_wav_files, concat_with_silence, mix_bgm
     from subtitle_generator import generate_srt
     from video_renderer import render_video
-
-    with open(text_file_path, 'r', encoding='utf-8') as f:
-        text = f.read()
-    text = normalize_text_for_tts(text)
-    prefix, chapter_dir, _chapter_num = _chapter_dir_for(text, source_path=text_file_path)
 
     if not os.path.isdir(chapter_dir):
         raise RuntimeError(f"Thư mục chương không tồn tại: {chapter_dir}. Chưa render audio.")
@@ -320,7 +554,7 @@ def _run_postprocess_core(text_file_path, bgm_path, bgm_volume, silence_dur, bg_
     text_save_path = os.path.join(chapter_dir, f"{prefix}.txt")
     if not os.path.isfile(text_save_path):
         with open(text_save_path, "w", encoding="utf-8") as tf:
-            tf.write(text)
+            tf.write(chapter_text_norm)
     srt_path = generate_srt(chapter_dir, text_save_path, silence_dur, max_chars=60)
     if not srt_path:
         raise RuntimeError("Lỗi tạo phụ đề.")
@@ -329,7 +563,7 @@ def _run_postprocess_core(text_file_path, bgm_path, bgm_volume, silence_dur, bg_
     if not bg_image_path:
         log += "\n⚠️ Chưa có ảnh nền → dừng ở bước audio + subtitle (không tạo video).\n"
         if progress_cb: progress_cb(1.0, "xong (chưa có video)")
-        return chapter_dir, prefix, log, None
+        return log, None
 
     if progress_cb: progress_cb(0.5, "đang render video (tự dò encoder)")
     log += "\n[3/3] RENDER VIDEO" + (" (không ghi cứng phụ đề)" if not burn_subtitles else "") + "\n"
@@ -348,35 +582,92 @@ def _run_postprocess_core(text_file_path, bgm_path, bgm_volume, silence_dur, bg_
     log += f"✅ Video: {os.path.basename(out_mp4)} ({size_mb:.1f} MB) — encoder: {used_encoder}\n"
     log += f"⏱️ Render video{'' if burn_subtitles else ' (không ghi cứng phụ đề)'}: {video_elapsed:.1f}s\n"
     if progress_cb: progress_cb(1.0, "hoàn tất")
-    return chapter_dir, prefix, log, out_mp4
+    return log, out_mp4
 
 def _process_chapter_e2e(text_file_path, bgm_path, bgm_volume, silence_dur, bg_image_path, font_size,
                           render_cb=None, pp_cb=None, burn_subtitles=True):
-    """Chạy trọn 1 chương: Bước 3 (render audio) nối liền Bước 4 (hậu kỳ + video),
-    không cần thao tác tay giữa 2 bước. Tự bỏ qua nếu chương đã xong từ trước.
+    """Chạy trọn 1 FILE upload: Agent Alpha phân tách raw_text thành N chương
+    (thay thế hoàn toàn 2 chỗ tách chương bằng regex hardcode trước đây) —
+    rồi với MỖI chương: Bước 3 (render audio) nối liền Bước 4 (hậu kỳ +
+    video), không cần thao tác tay giữa 2 bước. Tự bỏ qua chương nào đã xong
+    từ trước.
 
-    Trả về (prefix, log, video_path_or_None, da_bo_qua, khong_tim_thay_tieu_de_chuong).
+    Trả về (results, glossary_candidates):
+    - results: list[dict] — 1 phần tử / chương, mỗi phần tử có key: prefix,
+      log, video_path (hoặc None), skipped (bool), needs_review (bool — Agent
+      Alpha không chắc chắn về ranh giới chương này, xem confidence_score
+      trong log).
+    - glossary_candidates: list[dict] gộp từ new_entry_candidates của Agent
+      Beta qua MỌI chương trong file này (chưa ghi vào glossary — chờ người
+      dùng duyệt qua panel "📖 Duyệt Glossary").
     """
-    with open(text_file_path, 'r', encoding='utf-8') as f:
-        raw_text = f.read()
-    text_norm = normalize_text_for_tts(raw_text)
-    prefix, chapter_dir, chapter_num = _chapter_dir_for(text_norm, source_path=text_file_path)
-    no_heading = chapter_num is None
+    from voxdirector.agents.alpha_ingestion import segment_chapters
+
+    raw_text = _load_source_text(text_file_path)
+    alpha_chapters = segment_chapters(raw_text)
     want_video = bool(bg_image_path)
+    results = []
+    glossary_candidates = []
 
-    if _is_chapter_complete(chapter_dir, prefix, want_video):
-        existing = os.path.join(chapter_dir, f"{prefix}_video.mp4") if want_video else None
-        return prefix, f"⏭️ {prefix}: đã xử lý xong từ trước, bỏ qua.\n", existing, True, no_heading
+    for c_idx, chap in enumerate(alpha_chapters):
+        n_chapters = len(alpha_chapters)
+        # Suy prefix/chapter_dir từ text GỐC của Alpha (chưa qua Beta/normalize)
+        # để kiểm tra resume-skip TRƯỚC KHI gọi Agent Beta — Beta gọi Gemini
+        # API bên ngoài (có thể tốn phí), không nên gọi cho chương đã render
+        # xong từ trước. Heading "Chương N" (nếu có) không đổi qua Beta nên
+        # dùng label từ text gốc là đủ, không cần tính lại sau khi có
+        # corrected_text.
+        prefix, chapter_dir, label = _chapter_dir_for(
+            chap["text"], source_path=text_file_path,
+            chapter_idx=c_idx, total_in_file=n_chapters,
+        )
 
-    t_total = time.time()
-    _, _, render_log, _, _ = _render_chapter_audio(text_file_path, progress_cb=render_cb)
-    _, _, pp_log, video_path = _run_postprocess_core(
-        text_file_path, bgm_path, bgm_volume, silence_dur, bg_image_path, font_size,
-        progress_cb=pp_cb, burn_subtitles=burn_subtitles,
-    )
-    total_elapsed = time.time() - t_total
-    log = render_log + "\n" + pp_log + f"\n⏱️ TỔNG THỜI GIAN CHƯƠNG: {total_elapsed:.1f}s\n"
-    return prefix, log, video_path, False, no_heading
+        if _is_chapter_complete(chapter_dir, prefix, want_video):
+            existing = os.path.join(chapter_dir, f"{prefix}_video.mp4") if want_video else None
+            results.append({
+                "prefix": prefix, "log": f"⏭️ {prefix}: đã xử lý xong từ trước, bỏ qua.\n",
+                "video_path": existing, "skipped": True, "needs_review": chap["needs_review"],
+            })
+            continue
+
+        corrected_text, beta_note, beta_candidates = _apply_beta(chap["text"], chapter_number=c_idx + 1)
+        glossary_candidates.extend(beta_candidates)
+        text_norm = normalize_text_for_tts(corrected_text)
+
+        def _render_cb(done, total, desc, _c_idx=c_idx, _n=n_chapters):
+            if render_cb:
+                render_cb(done, total, f"[chương {_c_idx + 1}/{_n}] {desc}")
+
+        def _pp_cb(frac, desc, _c_idx=c_idx, _n=n_chapters):
+            if pp_cb:
+                pp_cb(frac, f"[chương {_c_idx + 1}/{_n}] {desc}")
+
+        t_total = time.time()
+        render_log, _, _ = _render_chapter_audio(text_norm, prefix, chapter_dir, progress_cb=_render_cb)
+        pp_log, video_path = _run_postprocess_core(
+            chapter_dir, prefix, text_norm, bgm_path, bgm_volume, silence_dur, bg_image_path, font_size,
+            progress_cb=_pp_cb, burn_subtitles=burn_subtitles,
+        )
+        delta_note = _apply_delta(chapter_dir, prefix, split_text_for_tts(text_norm, 250))
+        total_elapsed = time.time() - t_total
+        log = beta_note + render_log + "\n" + pp_log + "\n" + delta_note + f"\n⏱️ TỔNG THỜI GIAN CHƯƠNG: {total_elapsed:.1f}s\n"
+        if not label:
+            log += (
+                f"⚠️ Agent Alpha không tìm thấy \"Chương N\"/\"Chapter N\" tường minh trong chương "
+                f"này — dùng tên file + số thứ tự làm thư mục ({prefix}).\n"
+            )
+        if chap["needs_review"]:
+            log += (
+                f"⚠️ Agent Alpha KHÔNG chắc chắn về ranh giới chương này "
+                f"(confidence={chap['confidence_score']:.2f} < ngưỡng) — nên xem lại thủ công.\n"
+            )
+
+        results.append({
+            "prefix": prefix, "log": log, "video_path": video_path,
+            "skipped": False, "needs_review": chap["needs_review"],
+        })
+
+    return results, glossary_candidates
 
 def scan_output_health():
     """Quét toàn bộ outputs/ và báo cáo chương nào đang THIẾU file — để phát
@@ -395,7 +686,7 @@ def scan_output_health():
         if not os.path.isdir(chapter_dir):
             continue
         files = os.listdir(chapter_dir)
-        parts = [f for f in files if re.match(rf"^{re.escape(name)}_c\d+_p\d+\.wav$", f)]
+        parts = [f for f in files if re.match(rf"^{re.escape(name)}_p\d+\.wav$", f)]
         has_txt = f"{name}.txt" in files
         has_merged = f"{name}_merged.wav" in files
         srt_path = os.path.join(chapter_dir, f"{name}_merged.srt")
@@ -431,13 +722,14 @@ def scan_output_health():
 
 def process_batch(input_files, bgm_file, bgm_volume, silence_dur, bg_image, font_size, burn_subtitles,
                    progress=gr.Progress(track_tqdm=False)):
-    """Handler cho nút Batch: nhận nhiều file .txt, chạy Bước 3 -> Bước 4 liên tục
-    cho từng chương, tự bỏ qua chương đã xong, và KHÔNG dừng cả batch nếu 1
-    chương bị lỗi — để có thể để máy chạy qua đêm không cần trông chừng."""
+    """Handler cho nút Batch: nhận nhiều file .txt/.docx, mỗi file được Agent
+    Alpha tự phân tách thành N chương, rồi chạy Bước 3 -> Bước 4 liên tục cho
+    từng chương, tự bỏ qua chương đã xong, và KHÔNG dừng cả batch nếu 1 file
+    bị lỗi — để có thể để máy chạy qua đêm không cần trông chừng."""
     if selected_voice is None:
-        return "❌ Chưa chọn giọng. Quay lại Bước 1.", []
+        return "❌ Chưa chọn giọng. Quay lại Bước 1.", [], []
     if not input_files:
-        return "❌ Chưa chọn file nào.", []
+        return "❌ Chưa chọn file nào.", [], []
 
     bgm_path = bgm_file.name if (bgm_file and hasattr(bgm_file, 'name')) else bgm_file
     img_path = bg_image.name if (bg_image and hasattr(bg_image, 'name')) else bg_image
@@ -446,8 +738,9 @@ def process_batch(input_files, bgm_file, bgm_volume, silence_dur, bg_image, font
     file_paths = sorted(f.name for f in input_files)
     total_files = len(file_paths)
 
-    full_log = f"🌙 BATCH: {total_files} file — chương đã xong sẽ tự động được bỏ qua.\n\n"
-    videos, n_done, n_skipped, n_failed, n_no_heading = [], 0, 0, 0, 0
+    full_log = f"🌙 BATCH: {total_files} file — Agent Alpha tự phân tách chương trong từng file, chương đã xong sẽ tự động được bỏ qua.\n\n"
+    videos, n_done, n_skipped, n_failed, n_needs_review = [], 0, 0, 0, 0
+    all_candidates = []
     t_batch = time.time()
 
     for idx, fp in enumerate(file_paths):
@@ -460,18 +753,21 @@ def process_batch(input_files, bgm_file, bgm_volume, silence_dur, bg_image, font
         def pp_cb(frac, desc, _idx=idx, _label=label):
             progress((_idx + 0.5 + frac * 0.5) / total_files, desc=f"[{_idx+1}/{total_files}] {_label}: {desc}")
 
-        progress(idx / total_files, desc=f"[{idx+1}/{total_files}] Bắt đầu {label}...")
+        progress(idx / total_files, desc=f"[{idx+1}/{total_files}] Bắt đầu {label} (Agent Alpha đang phân tách chương)...")
         try:
-            prefix, chap_log, video_path, skipped, no_heading = _process_chapter_e2e(
+            chapter_results, file_candidates = _process_chapter_e2e(
                 fp, bgm_path, bgm_volume, silence_dur, img_path, font_size,
                 render_cb=render_cb, pp_cb=pp_cb, burn_subtitles=burn_subtitles,
             )
-            full_log += f"=== {prefix} ({label}) ===\n{chap_log}\n"
-            n_skipped += int(skipped)
-            n_done += int(not skipped)
-            n_no_heading += int(no_heading)
-            if video_path:
-                videos.append(video_path)
+            all_candidates.extend(file_candidates)
+            full_log += f"=== {label} — Agent Alpha tách thành {len(chapter_results)} chương ===\n"
+            for r in chapter_results:
+                full_log += f"--- {r['prefix']} ---\n{r['log']}\n"
+                n_skipped += int(r["skipped"])
+                n_done += int(not r["skipped"])
+                n_needs_review += int(r["needs_review"])
+                if r["video_path"]:
+                    videos.append(r["video_path"])
         except FileNotFoundError:
             n_failed += 1
             full_log += f"=== ❌ {label}: FFmpeg chưa cài. Chạy: winget install Gyan.FFmpeg rồi khởi động lại. ===\n\n"
@@ -481,12 +777,89 @@ def process_batch(input_files, bgm_file, bgm_volume, silence_dur, bg_image, font
 
     batch_elapsed = time.time() - t_batch
     progress(1.0, desc="Hoàn tất batch!")
-    full_log += f"\n🎉 BATCH XONG: {n_done} chương mới, {n_skipped} bỏ qua (đã có sẵn), {n_failed} lỗi / tổng {total_files}."
+    full_log += f"\n🎉 BATCH XONG: {n_done} chương mới, {n_skipped} bỏ qua (đã có sẵn), {n_failed} file lỗi / tổng {total_files} file."
     full_log += f"\n⏱️ TỔNG THỜI GIAN BATCH: {batch_elapsed / 60:.1f} phút"
-    if n_no_heading:
-        full_log += f"\n⚠️ {n_no_heading} file không có \"Chương N\"/\"Chapter N\" trong văn bản (xem chi tiết ở trên)."
+    if n_needs_review:
+        full_log += f"\n⚠️ {n_needs_review} chương Agent Alpha đánh dấu cần xem lại ranh giới (confidence thấp) — xem chi tiết ở trên."
+    if all_candidates:
+        full_log += f"\n📖 Agent Beta đề xuất {len(all_candidates)} thuật ngữ mới — xem panel \"Duyệt Glossary\" bên dưới để xác nhận trước khi dùng cho các chương sau."
     full_log += "\n\n" + scan_output_health()
-    return full_log, videos
+    return full_log, videos, _dedupe_glossary_candidates(all_candidates)
+
+
+def _dedupe_glossary_candidates(candidates: list[dict]) -> list[list]:
+    """Gộp new_entry_candidates từ nhiều chương/file trong 1 lần Batch —
+    cùng 1 term có thể được nhiều chương cùng đề xuất (vd. nhân vật xuất
+    hiện xuyên suốt); chỉ giữ lại bản có confidence_score cao nhất, nhưng
+    vẫn nhớ chương PHÁT HIỆN ĐẦU TIÊN (chapter_number nhỏ nhất trong số các
+    lần đề xuất) để ghi first_seen_chapter cho đúng khi duyệt.
+
+    Trả về list các row (list, KHÔNG phải dict) đúng thứ tự cột của
+    gr.Dataframe: [term, entity_type, canonical_form, confidence_score,
+    chapter_number] — Term/Entity Type/Canonical Form có thể sửa trực tiếp
+    trên bảng trước khi bấm Duyệt.
+    """
+    best_by_term: dict[str, dict] = {}
+    for c in candidates:
+        term = c.get("term")
+        if not term:
+            continue
+        existing = best_by_term.get(term)
+        if existing is None or c.get("confidence_score", 0) > existing.get("confidence_score", 0):
+            merged = dict(c)
+            if existing is not None:
+                merged["chapter_number"] = min(
+                    c.get("chapter_number", 0), existing.get("chapter_number", 0),
+                )
+            best_by_term[term] = merged
+        elif existing is not None:
+            existing["chapter_number"] = min(
+                existing.get("chapter_number", 0), c.get("chapter_number", 0),
+            )
+
+    return [
+        [c["term"], c.get("entity_type", "term"), c.get("canonical_form", c["term"]),
+         round(c.get("confidence_score", 0.0), 2), c.get("chapter_number", 0)]
+        for c in sorted(best_by_term.values(), key=lambda c: -c.get("confidence_score", 0))
+    ]
+
+
+def approve_glossary_candidates(table_rows):
+    """Handler cho nút '✅ Duyệt & Lưu vào Glossary' — đọc đúng nội dung
+    HIỆN TẠI trên bảng (người dùng có thể đã sửa Canonical Form/Entity Type,
+    hoặc xoá bớt dòng không muốn duyệt trước khi bấm — Gradio Dataframe cho
+    xoá dòng qua UI có sẵn), rồi ghi vào ChromaDB qua approve_new_entries().
+    KHÔNG tự động chạy — chỉ chạy khi người dùng chủ động bấm nút, đúng
+    nguyên tắc "chờ xác nhận từ con người" của Agent Beta."""
+    if table_rows is None or len(table_rows) == 0:
+        return "❌ Không có thuật ngữ nào trên bảng để duyệt.", []
+
+    from voxdirector.agents.beta_consistency import approve_new_entries
+
+    candidates = []
+    for row in table_rows:
+        term, entity_type, canonical_form, confidence_score, chapter_number = (list(row) + [None] * 5)[:5]
+        if not term:
+            continue
+        candidates.append({
+            "term": term, "entity_type": entity_type,
+            "canonical_form": canonical_form or term,
+            "confidence_score": confidence_score,
+            "chapter_number": int(chapter_number) if chapter_number else 0,
+        })
+
+    valid_types = {"character", "place", "term"}
+    n_valid = sum(1 for c in candidates if c["entity_type"] in valid_types)
+    n_skipped = len(candidates) - n_valid
+    try:
+        approve_new_entries(candidates)
+    except Exception as e:
+        return f"❌ Lỗi khi ghi vào glossary: {e}", table_rows
+
+    msg = f"✅ Đã lưu {n_valid} thuật ngữ vào glossary."
+    if n_skipped:
+        msg += f" ⚠️ Bỏ qua {n_skipped} dòng có entity_type không hợp lệ (phải là character/place/term)."
+    return msg, []
 
 # ===== GIAO DIỆN GRADIO =====
 with gr.Blocks(title="VieNeu-TTS Auto Reader", theme=gr.themes.Soft()) as app:
@@ -516,12 +889,18 @@ with gr.Blocks(title="VieNeu-TTS Auto Reader", theme=gr.themes.Soft()) as app:
             gr.Markdown("---")
             with gr.Accordion("🦜 Hoặc: Nhân bản giọng từ audio mẫu (Voice Cloning)", open=False):
                 gr.Markdown(
-                    "Tải lên 3-5 giây audio mẫu của giọng bạn muốn dùng — v3 Turbo nhân bản "
-                    "trực tiếp từ audio, không cần nhập nội dung. Bạn cần có quyền sử dụng "
-                    "audio mẫu này (giọng của chính bạn, người đồng ý cho dùng, hoặc tài "
-                    "nguyên được cấp phép rõ ràng)."
+                    "Tải lên 3-10 giây audio mẫu của giọng bạn muốn dùng, kèm **transcript** "
+                    "(nội dung chính xác audio đang đọc) — engine cần transcript để nhân bản "
+                    "đúng, không chỉ từ audio đơn thuần. Bạn cần có quyền sử dụng audio mẫu "
+                    "này (giọng của chính bạn, người đồng ý cho dùng, hoặc tài nguyên được "
+                    "cấp phép rõ ràng)."
                 )
-                clone_audio = gr.Audio(label="Audio mẫu (3-5 giây)", type="filepath")
+                clone_audio = gr.Audio(label="Audio mẫu (3-10 giây)", type="filepath")
+                clone_ref_text = gr.Textbox(
+                    label="Transcript audio mẫu (nội dung chính xác audio đang đọc)",
+                    placeholder="Nhập đúng nội dung văn bản mà audio mẫu đang đọc...",
+                    lines=2,
+                )
                 btn_ngoc_huyen = gr.Button(
                     "🎙️ Dùng giọng có sẵn: Ngọc Huyền (ví dụ chính thức từ VieNeu-TTS)",
                     variant="secondary",
@@ -533,9 +912,11 @@ with gr.Blocks(title="VieNeu-TTS Auto Reader", theme=gr.themes.Soft()) as app:
 
                 cloned_voice_state = gr.State(None)
 
-                btn_ngoc_huyen.click(fn=fetch_ngoc_huyen_sample, outputs=[clone_audio, clone_status])
+                btn_ngoc_huyen.click(
+                    fn=fetch_ngoc_huyen_sample, outputs=[clone_audio, clone_ref_text, clone_status],
+                )
                 btn_clone_preview.click(
-                    fn=clone_and_preview, inputs=[clone_audio],
+                    fn=clone_and_preview, inputs=[clone_audio, clone_ref_text],
                     outputs=[cloned_voice_state, clone_preview_audio, clone_status],
                 )
                 btn_confirm_clone.click(
@@ -593,8 +974,8 @@ with gr.Blocks(title="VieNeu-TTS Auto Reader", theme=gr.themes.Soft()) as app:
             gr.Markdown("*Chương đã xử lý xong (đã có video, hoặc đã có audio+phụ đề nếu không dùng ảnh nền) sẽ tự động được bỏ qua ở lần chạy sau — an toàn để bấm chạy lại hoặc để máy chạy qua đêm.*")
 
             batch_input_files = gr.File(
-                label="File(s) chương truyện (.txt) — có thể chọn nhiều file cùng lúc",
-                file_types=[".txt"], file_count="multiple",
+                label="File(s) chương truyện (.txt / .docx) — có thể chọn nhiều file cùng lúc",
+                file_types=[".txt", ".docx"], file_count="multiple",
             )
 
             with gr.Row():
@@ -621,10 +1002,32 @@ with gr.Blocks(title="VieNeu-TTS Auto Reader", theme=gr.themes.Soft()) as app:
             gr.Markdown("### 🎥 Video đã hoàn thành")
             batch_videos = gr.File(label="Tải video (.mp4)", file_count="multiple", interactive=False)
 
+            gr.Markdown("---")
+            gr.Markdown("### 📖 Duyệt Glossary (Agent Beta)")
+            gr.Markdown(
+                "*Thuật ngữ/tên riêng MỚI mà Agent Beta phát hiện trong lần Batch vừa chạy — CHƯA được ghi vào "
+                "Character Glossary. Sửa Canonical Form/Entity Type trực tiếp trên bảng nếu cần, xoá dòng nào "
+                "không muốn dùng, rồi bấm Duyệt. Chỉ sau khi duyệt, các chương SAU (lần chạy Batch tiếp theo) mới "
+                "tự động dùng đúng cách viết này — Agent Beta không bao giờ tự ý thêm vào glossary.*"
+            )
+            glossary_candidates_table = gr.Dataframe(
+                headers=["Term", "Entity Type", "Canonical Form", "Confidence", "Chương phát hiện"],
+                datatype=["str", "str", "str", "number", "number"],
+                row_count=(0, "dynamic"), col_count=(5, "fixed"), interactive=True,
+                label="Thuật ngữ mới chờ duyệt",
+            )
+            btn_approve_glossary = gr.Button("✅ Duyệt & Lưu vào Glossary", variant="primary")
+            glossary_approve_status = gr.Textbox(label="Trạng thái", interactive=False)
+            btn_approve_glossary.click(
+                fn=approve_glossary_candidates,
+                inputs=[glossary_candidates_table],
+                outputs=[glossary_approve_status, glossary_candidates_table],
+            )
+
             btn_batch.click(
                 fn=process_batch,
                 inputs=[batch_input_files, batch_bgm, batch_bgm_vol, batch_silence, batch_bg_image, batch_font, batch_burn_subs],
-                outputs=[batch_log, batch_videos]
+                outputs=[batch_log, batch_videos, glossary_candidates_table]
             )
 
             gr.Markdown("---")
@@ -635,4 +1038,33 @@ with gr.Blocks(title="VieNeu-TTS Auto Reader", theme=gr.themes.Soft()) as app:
                 btn_health.click(fn=scan_output_health, outputs=[health_report])
 
 if __name__ == "__main__":
-    app.launch()
+    # server_name="0.0.0.0" + $PORT: bắt buộc để chạy trên Cloud Run (container
+    # chỉ nhận traffic tới cổng đọc từ biến môi trường PORT do platform cấp,
+    # không phải cổng cố định) — xem Dockerfile ở repo root. Mặc định 7860
+    # khi chạy local (không có PORT) để không đổi hành vi hiện tại.
+    #
+    # _frontend=False: Gradio tự kiểm tra "http://localhost:{port}/" sau khi
+    # khởi động (networking.url_ok) để chắc chắn server thật sự chạy được —
+    # trong sandbox của Cloud Run, "localhost" phân giải sang IPv6 ::1 trong
+    # khi server chỉ lắng nghe wildcard IPv4 0.0.0.0, nên tự-kiểm-tra này LUÔN
+    # thất bại (dù server hoàn toàn bình thường — chính Cloud Run tự kiểm tra
+    # TCP riêng và xác nhận thành công) → Gradio ném ValueError "When
+    # localhost is not accessible..." và container crash ngay. Cloud Run đã
+    # tự có health check TCP riêng nên không cần Gradio kiểm tra lại.
+    # pwa=True: bật hỗ trợ PWA có sẵn của Gradio (tự sinh manifest, không cần
+    # tự viết service worker/manifest.json) — cho phép "Install app" trên
+    # trình duyệt khi truy cập qua domain riêng (xem Section 11.7 của spec:
+    # bản Cloud Run phụ dùng để chứng minh khả năng deploy công khai qua PWA
+    # + domain riêng). Áp dụng chung cho cả 2 môi trường (local + Cloud Run)
+    # vì vô hại khi chạy local — Gradio chỉ thêm route/manifest, không đổi gì
+    # khác. favicon_path dùng đường dẫn tuyệt đối (nhất quán với current_dir/
+    # project_root đã tính ở đầu file) thay vì "./assets/..." tương đối theo
+    # CWD như ví dụ trong spec — tránh vỡ nếu chạy từ thư mục khác. Icon hiện
+    # tại chỉ là placeholder do Claude tự tạo — CẦN được đội ngũ thay bằng
+    # icon thật trước khi nộp bài.
+    favicon_path = os.path.join(project_root, "assets", "voxdirector_icon.png")
+    app.launch(
+        server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)),
+        _frontend=False,
+        pwa=True, favicon_path=favicon_path if os.path.isfile(favicon_path) else None,
+    )

@@ -1,0 +1,65 @@
+# Container GPU-enabled cho VoxDirector AI, dùng để đóng gói chạy trên máy
+# đồng nghiệp CÓ card đồ hoạ rời NVIDIA (môi trường demo CHÍNH — xem Section
+# 11.7 của VoxDirectorAI_Technical_Spec.md: local-GPU là primary, Cloud Run
+# chỉ là bản phụ chứng minh khả năng deploy công khai).
+#
+# Khác với Dockerfile (bản Cloud Run, CPU-only) ở đúng 1 điểm cốt lõi: cài
+# torch/torchaudio bản build CUDA (cu128, khớp pyproject.toml [tool.uv.sources])
+# thay vì để pip tự chọn build CPU-only mặc định từ PyPI. Phần còn lại
+# (ffmpeg, fonts-noto, build-essential/cmake cho llama-cpp-python, cách cài
+# `vieneu` + pipeline_requirements.txt, ghim torchao==0.10.0) giữ nguyên lý do
+# như Dockerfile — xem comment ở đó.
+#
+# KHÔNG cần base image nvidia/cuda hay cài CUDA Toolkit trong image: wheel
+# cu128 của PyTorch tự mang theo toàn bộ thư viện runtime CUDA/cuDNN cần
+# thiết. Máy chạy container chỉ cần: (1) driver NVIDIA trên Windows host
+# (KHÔNG thể đóng gói vào image — driver luôn phải cài trực tiếp trên máy
+# thật), (2) Docker Desktop bật WSL2 + GPU support, (3) chạy container với cờ
+# `--gpus all`.
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ffmpeg fonts-noto build-essential cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+ENV PIP_DEFAULT_TIMEOUT=100
+ENV PIP_RETRIES=10
+RUN pip install --upgrade pip
+
+COPY pyproject.toml README_PYPI.md LICENSE ./
+COPY src/ src/
+RUN pip install --no-cache-dir .
+
+# GHIM torch/torchaudio bản CUDA 12.8 (đúng bản pyproject.toml đang khai báo
+# qua index "pytorch" — https://download.pytorch.org/whl/cu128) — cài TRƯỚC
+# pipeline_requirements.txt (dòng "torch" trong đó không ghim version/index)
+# để pip coi torch đã thoả mãn và không tự ý thay bằng build CPU-only từ
+# PyPI mặc định.
+RUN pip install --no-cache-dir torch==2.8.0 torchaudio==2.8.0 \
+        --index-url https://download.pytorch.org/whl/cu128
+
+COPY pipeline_requirements.txt .
+RUN pip install --no-cache-dir -r pipeline_requirements.txt
+
+# Xem giải thích đầy đủ trong Dockerfile (bản CPU/Cloud Run) — torchtune (kéo
+# theo bởi neucodec) chỉ tương thích torchao==0.10.0, không phải bản mới nhất.
+RUN pip install --no-cache-dir torchao==0.10.0
+
+COPY pipeline/ pipeline/
+COPY voxdirector/ voxdirector/
+COPY assets/ assets/
+
+# KHÔNG bundle sẵn model weights (faster-whisper, backbone, codec) vào image
+# như Dockerfile bản Cloud Run — image đó cần tự chứa vì container Cloud Run
+# ephemeral, còn image này chạy lặp lại nhiều lần trên cùng 1 máy đồng
+# nghiệp: mount volume ngoài cho cache Hugging Face (xem hướng dẫn chạy) để
+# chỉ tải model 1 lần duy nhất, và giữ image nhẹ hơn để build/cập nhật code
+# nhanh hơn.
+ENV HF_HOME=/root/.cache/huggingface
+
+ENV PORT=7860
+EXPOSE 7860
+
+CMD ["python", "-m", "pipeline.auto_tts"]

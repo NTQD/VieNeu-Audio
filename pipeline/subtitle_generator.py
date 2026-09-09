@@ -82,7 +82,14 @@ def format_ts(seconds):
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 def generate_srt(chapter_dir, text_file=None, silence=0.5, max_chars=60):
-    """Tạo SRT từ text gốc + duration .wav."""
+    """Tạo SRT từ text gốc + duration .wav.
+
+    text_file luôn là text của ĐÚNG 1 chương — Agent Alpha (xem
+    voxdirector/agents/alpha_ingestion.py) đã phân tách chương ở tầng
+    auto_tts.py trước khi lưu file này, nên KHÔNG cần tự tách lại "Chương N"
+    bằng regex ở đây nữa (trước đây có 1 bản regex-split trùng lặp y hệt
+    auto_tts.py, dễ lệch nếu 1 trong 2 chỗ đổi logic mà chỗ kia không đổi
+    theo)."""
     wav_files = get_wav_files(chapter_dir)
     if not wav_files: return None
 
@@ -92,17 +99,7 @@ def generate_srt(chapter_dir, text_file=None, silence=0.5, max_chars=60):
     with open(txt_path, "r", encoding="utf-8") as f:
         full_text = f.read()
 
-    chapter_texts = re.split(r'(?i)(?=[Cc]h(?:ương|apter)\s*\d+)', full_text)
-    chapter_texts = [c.strip() for c in chapter_texts if c.strip()]
-    if not chapter_texts:
-        chapter_texts = [full_text.strip()]
-        
-    chunks = []
-    chunk_chapter_map = []
-    for c_idx, chap_text in enumerate(chapter_texts):
-        chap_chunks = split_text_for_tts(chap_text, max_words=250)
-        chunks.extend(chap_chunks)
-        chunk_chapter_map.extend([c_idx] * len(chap_chunks))
+    chunks = split_text_for_tts(full_text.strip(), max_words=250)
 
     pairs = min(len(chunks), len(wav_files))
     srt_entries = []
@@ -116,15 +113,8 @@ def generate_srt(chapter_dir, text_file=None, silence=0.5, max_chars=60):
 
         sub_lines = split_text_to_subtitle_lines(chunks[i], max_chars)
 
-        if i < pairs - 1:
-            curr_c = chunk_chapter_map[i]
-            next_c = chunk_chapter_map[i+1]
-            current_silence = 2.0 if curr_c != next_c else silence
-        else:
-            current_silence = silence
-
         if not sub_lines:
-            cursor = part_end + current_silence
+            cursor = part_end + silence
             continue
 
         # Chia thời lượng của cả phần (dur) cho từng dòng phụ đề THEO TỈ LỆ
@@ -142,7 +132,7 @@ def generate_srt(chapter_dir, text_file=None, silence=0.5, max_chars=60):
             index += 1
             line_start = line_end
 
-        cursor = part_end + current_silence
+        cursor = part_end + silence
 
     chapter_name = os.path.basename(chapter_dir)
     srt_path = os.path.join(chapter_dir, f"{chapter_name}_merged.srt")

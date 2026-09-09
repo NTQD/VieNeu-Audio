@@ -1,62 +1,26 @@
-# Python cache
-__pycache__/
-*.pyc
-*.pyo
-**/__pycache__/
-*.py[cod]
-*$py.class
-
-# Git
+# Chỉ dùng khi Dockerfile chuyển sang `COPY . .` — hiện Dockerfile COPY chọn
+# lọc từng phần (pyproject.toml, src/, pipeline/, voxdirector/) nên file này
+# chủ yếu để phòng hờ/dọn build context.
 .git/
 .github/
-.gitignore
-
-# Virtual environments
+outputs/
+# .venv/ is ~1GB with tens of thousands of files — walking it is what made
+# the build context step hang for 80+ minutes before this was added.
 .venv/
 venv/
-env/
-ENV/
-
-
-# Output files
-output_audio/
-
-# Web UI (React)
-web_ui/node_modules/
-web_ui/dist/
-web_ui/.vite/
-node_modules/
-
-# Logs
-*.log
-logs/
-
-# OS files
-.DS_Store
-Thumbs.db
-*.swp
-*.swo
-*~
-
-# Environment
-.env
-.env.local
-
-# IDE
-.vscode/
-.idea/
-*.sublime-*
-
-# Audio files (except samples)
-*.wav
-!sample/*.wav
-outputs/
-
-# Temporary files
-*.tmp
-.cache/
-
-
-
-
-
+.chroma/
+.voice_cache/
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+finetune/
+apps/
+examples/
+docs/
+*.md
+!README_PYPI.md
+*.ipynb
+*.zip
+.mcp.json
+.claude/

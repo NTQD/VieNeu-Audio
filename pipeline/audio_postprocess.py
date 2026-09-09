@@ -58,29 +58,30 @@ def generate_silence(ffmpeg, duration_s, sample_rate=24000, output_path=None):
     return output_path
 
 def concat_with_silence(ffmpeg, wav_files, silence_duration, output_path):
+    """Ghép các file .wav phần của 1 chương, chèn khoảng lặng đều giữa mỗi
+    cặp file.
+
+    Trước đây hàm này còn tự phát hiện "chuyển chương" (dựa vào số trong tên
+    file dạng "_c<N>_p<M>.wav") để chèn khoảng lặng dài hơn (2.0s) tại điểm
+    đó — điều này không còn cần thiết: kể từ khi Agent Alpha đảm nhiệm việc
+    tách chương (xem voxdirector/agents/alpha_ingestion.py và
+    pipeline/auto_tts.py), MỖI thư mục chương luôn chỉ chứa các phần của
+    ĐÚNG 1 chương — 1 lệnh gọi concat_with_silence() không bao giờ còn bắc
+    qua ranh giới 2 chương nữa, nên không còn "điểm chuyển chương" nào để
+    phát hiện trong danh sách wav_files truyền vào.
+    """
     silence_file = generate_silence(ffmpeg, silence_duration)
-    chapter_silence_file = generate_silence(ffmpeg, 2.0)
-    
-    def get_chapter_idx(filename):
-        m = re.search(r'_c(\d+)_p\d+\.wav', os.path.basename(filename))
-        return int(m.group(1)) if m else 0
 
     concat_list = tempfile.mktemp(suffix=".txt")
     with open(concat_list, "w", encoding="utf-8") as f:
         for i, wav in enumerate(wav_files):
             f.write(f"file '{os.path.abspath(wav)}'\n")
             if i < len(wav_files) - 1:
-                curr_c = get_chapter_idx(wav)
-                next_c = get_chapter_idx(wav_files[i+1])
-                if curr_c != next_c:
-                    f.write(f"file '{os.path.abspath(chapter_silence_file)}'\n")
-                else:
-                    f.write(f"file '{os.path.abspath(silence_file)}'\n")
-                    
+                f.write(f"file '{os.path.abspath(silence_file)}'\n")
+
     cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c:a", "pcm_s16le", output_path]
     subprocess.run(cmd, capture_output=True, check=True)
     os.remove(silence_file)
-    os.remove(chapter_silence_file)
     os.remove(concat_list)
     return output_path
 
