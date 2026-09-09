@@ -367,6 +367,13 @@ def _apply_delta(chapter_dir, prefix, chunks):
     SAU KHI audio của chương đã ghép xong — ghi {prefix}_qa_report.json vào
     chapter_dir để người dùng xem lại (xem voxdirector/agents/delta_qa.py).
 
+    THỬ NGHIỆM (theo yêu cầu người dùng, 2026-09-09): chỉ chạy khi tuỳ chọn
+    "Chạy Agent Delta" ở tab Batch được bật (mặc định TẮT) — xem run_delta ở
+    _process_chapter_e2e()/process_batch(). WER của faster-whisper là 1 phép
+    đo GIÁN TIẾP (lỗi có thể đến từ chính ASR nhận dạng sai giọng đọc tiếng
+    Việt, không hẳn từ audio TTS thật sự có vấn đề) — không thay thế cho việc
+    tự nghe kiểm tra, chỉ là 1 tín hiệu tham khảo thêm.
+
     faster-whisper/jiwer là dependency MỚI (xem pipeline_requirements.txt),
     chưa chắc đã cài — nếu thiếu, BỎ QUA Delta hoàn toàn thay vì lỗi cả
     chương vừa render xong.
@@ -585,7 +592,7 @@ def _run_postprocess_core(chapter_dir, prefix, chapter_text_norm, bgm_path, bgm_
     return log, out_mp4
 
 def _process_chapter_e2e(text_file_path, bgm_path, bgm_volume, silence_dur, bg_image_path, font_size,
-                          render_cb=None, pp_cb=None, burn_subtitles=True):
+                          render_cb=None, pp_cb=None, burn_subtitles=True, run_delta=False):
     """Chạy trọn 1 FILE upload: Agent Alpha phân tách raw_text thành N chương
     (thay thế hoàn toàn 2 chỗ tách chương bằng regex hardcode trước đây) —
     rồi với MỖI chương: Bước 3 (render audio) nối liền Bước 4 (hậu kỳ +
@@ -648,7 +655,10 @@ def _process_chapter_e2e(text_file_path, bgm_path, bgm_volume, silence_dur, bg_i
             chapter_dir, prefix, text_norm, bgm_path, bgm_volume, silence_dur, bg_image_path, font_size,
             progress_cb=_pp_cb, burn_subtitles=burn_subtitles,
         )
-        delta_note = _apply_delta(chapter_dir, prefix, split_text_for_tts(text_norm, 250))
+        if run_delta:
+            delta_note = _apply_delta(chapter_dir, prefix, split_text_for_tts(text_norm, 250))
+        else:
+            delta_note = "⏭️ Agent Delta: bỏ qua (tính năng THỬ NGHIỆM, chưa bật ở tuỳ chọn Batch — tự nghe/kiểm tra thủ công như bình thường).\n"
         total_elapsed = time.time() - t_total
         log = beta_note + render_log + "\n" + pp_log + "\n" + delta_note + f"\n⏱️ TỔNG THỜI GIAN CHƯƠNG: {total_elapsed:.1f}s\n"
         if not label:
@@ -721,11 +731,15 @@ def scan_output_health():
     return report
 
 def process_batch(input_files, bgm_file, bgm_volume, silence_dur, bg_image, font_size, burn_subtitles,
-                   progress=gr.Progress(track_tqdm=False)):
+                   run_delta=False, progress=gr.Progress(track_tqdm=False)):
     """Handler cho nút Batch: nhận nhiều file .txt/.docx, mỗi file được Agent
     Alpha tự phân tách thành N chương, rồi chạy Bước 3 -> Bước 4 liên tục cho
     từng chương, tự bỏ qua chương đã xong, và KHÔNG dừng cả batch nếu 1 file
-    bị lỗi — để có thể để máy chạy qua đêm không cần trông chừng."""
+    bị lỗi — để có thể để máy chạy qua đêm không cần trông chừng.
+
+    run_delta: mặc định TẮT — Agent Delta (QA đối chiếu ASR) là tính năng
+    THỬ NGHIỆM, chỉ chạy khi người dùng chủ động bật ở checkbox tương ứng
+    (xem UI bên dưới)."""
     if selected_voice is None:
         return "❌ Chưa chọn giọng. Quay lại Bước 1.", [], []
     if not input_files:
@@ -757,7 +771,7 @@ def process_batch(input_files, bgm_file, bgm_volume, silence_dur, bg_image, font
         try:
             chapter_results, file_candidates = _process_chapter_e2e(
                 fp, bgm_path, bgm_volume, silence_dur, img_path, font_size,
-                render_cb=render_cb, pp_cb=pp_cb, burn_subtitles=burn_subtitles,
+                render_cb=render_cb, pp_cb=pp_cb, burn_subtitles=burn_subtitles, run_delta=run_delta,
             )
             all_candidates.extend(file_candidates)
             full_log += f"=== {label} — Agent Alpha tách thành {len(chapter_results)} chương ===\n"
@@ -995,6 +1009,17 @@ with gr.Blocks(title="VieNeu-TTS Auto Reader", theme=gr.themes.Soft()) as app:
                         value=True, label="🔥 Ghi cứng phụ đề vào video",
                         info="Tắt để render NHANH HƠN NHIỀU (bỏ qua bước tốn thời gian nhất) — dùng khi bạn tự upload file .srt riêng lên YouTube (Video > Phụ đề) thay vì ghi cứng vào hình.",
                     )
+                    batch_run_delta = gr.Checkbox(
+                        value=False, label="🧪 Chạy Agent Delta (QA đối chiếu ASR) — THỬ NGHIỆM",
+                        info=(
+                            "TẮT theo mặc định. Delta dùng faster-whisper để tự \"nghe lại\" audio vừa render rồi so "
+                            "với văn bản gốc, tính ra Word Error Rate — đây CHỈ là 1 tín hiệu tham khảo THÊM, KHÔNG "
+                            "thay thế việc bạn tự nghe kiểm tra. Độ chính xác chưa được kiểm chứng kỹ và bản thân "
+                            "ASR cũng có thể nghe sai giọng đọc tiếng Việt (lỗi báo ra chưa chắc do audio TTS có vấn "
+                            "đề thật). Bật lên sẽ làm batch chạy CHẬM HƠN (thêm 1 lượt nhận dạng giọng nói mỗi "
+                            "chương) và cần đã cài faster-whisper/jiwer."
+                        ),
+                    )
 
             btn_batch = gr.Button("🌙 Chạy Batch: Audio → Video cho tất cả file", variant="primary", size="lg")
             batch_log = gr.Textbox(label="Nhật ký Batch", lines=20, interactive=False)
@@ -1026,7 +1051,8 @@ with gr.Blocks(title="VieNeu-TTS Auto Reader", theme=gr.themes.Soft()) as app:
 
             btn_batch.click(
                 fn=process_batch,
-                inputs=[batch_input_files, batch_bgm, batch_bgm_vol, batch_silence, batch_bg_image, batch_font, batch_burn_subs],
+                inputs=[batch_input_files, batch_bgm, batch_bgm_vol, batch_silence, batch_bg_image, batch_font,
+                        batch_burn_subs, batch_run_delta],
                 outputs=[batch_log, batch_videos, glossary_candidates_table]
             )
 
