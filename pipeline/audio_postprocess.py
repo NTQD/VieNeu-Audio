@@ -57,33 +57,65 @@ def generate_silence(ffmpeg, duration_s, sample_rate=24000, output_path=None):
     subprocess.run(cmd, capture_output=True, check=True)
     return output_path
 
-def concat_with_silence(ffmpeg, wav_files, silence_duration, output_path):
-    """Ghép các file .wav phần của 1 chương, chèn khoảng lặng đều giữa mỗi
-    cặp file.
+def concat_with_variable_silence(ffmpeg, wav_files, silence_durations, output_path, sample_rate=24000):
+    """Ghép N file .wav với N-1 khoảng lặng CÓ ĐỘ DÀI RIÊNG giữa mỗi cặp
+    file liên tiếp — nguyên thuỷ dùng chung cho CẢ HAI cấp độ ngắt nghỉ của
+    v5 (xem VoxDirectorAI_Technical_Spec.md Section 7.2/7.3), thay vì viết 2
+    hàm ghép riêng biệt:
+    - Section 7.2 (PAUSE_LONG, cấp THÔ — giữa các chunk ~250-từ do Alpha/Beta
+      đánh dấu ngữ nghĩa): mỗi phần tử wav_files là audio đã render xong của
+      1 CHUNK hoàn chỉnh.
+    - Section 7.3 (dấu câu, cấp MỊN — bên trong 1 chunk, xem
+      pipeline/punctuation_pauses.py): mỗi phần tử wav_files là audio của 1
+      MẢNH nhỏ hơn (một phần của câu), sẽ được ghép lại thành audio hoàn
+      chỉnh của chunk đó trước khi chunk đó lại được ghép ở cấp Section 7.2.
 
-    Trước đây hàm này còn tự phát hiện "chuyển chương" (dựa vào số trong tên
-    file dạng "_c<N>_p<M>.wav") để chèn khoảng lặng dài hơn (2.0s) tại điểm
-    đó — điều này không còn cần thiết: kể từ khi Agent Alpha đảm nhiệm việc
-    tách chương (xem voxdirector/agents/alpha_ingestion.py và
-    pipeline/auto_tts.py), MỖI thư mục chương luôn chỉ chứa các phần của
-    ĐÚNG 1 chương — 1 lệnh gọi concat_with_silence() không bao giờ còn bắc
-    qua ranh giới 2 chương nữa, nên không còn "điểm chuyển chương" nào để
-    phát hiện trong danh sách wav_files truyền vào.
+    silence_durations: list[float] (giây) — ĐÚNG len(wav_files) - 1 phần tử,
+    khoảng lặng giữa wav_files[i] và wav_files[i+1]. Raise ValueError nếu
+    sai số lượng, thay vì âm thầm cắt/lặp — 1 lỗi lệch-số-lượng ở đây nghĩa
+    là code gọi hàm đã tính sai đâu đó, tốt hơn nên biết ngay.
     """
-    silence_file = generate_silence(ffmpeg, silence_duration)
+    if len(silence_durations) != len(wav_files) - 1:
+        raise ValueError(
+            f"Cần đúng {len(wav_files) - 1} khoảng lặng cho {len(wav_files)} file "
+            f"({len(wav_files)} file → {len(wav_files) - 1} khoảng giữa), nhưng "
+            f"nhận được {len(silence_durations)}."
+        )
+
+    silence_files = [generate_silence(ffmpeg, d, sample_rate=sample_rate) for d in silence_durations]
 
     concat_list = tempfile.mktemp(suffix=".txt")
     with open(concat_list, "w", encoding="utf-8") as f:
         for i, wav in enumerate(wav_files):
             f.write(f"file '{os.path.abspath(wav)}'\n")
             if i < len(wav_files) - 1:
-                f.write(f"file '{os.path.abspath(silence_file)}'\n")
+                f.write(f"file '{os.path.abspath(silence_files[i])}'\n")
 
     cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c:a", "pcm_s16le", output_path]
     subprocess.run(cmd, capture_output=True, check=True)
-    os.remove(silence_file)
+    for sf in silence_files:
+        os.remove(sf)
     os.remove(concat_list)
     return output_path
+
+
+def concat_with_silence(ffmpeg, wav_files, silence_duration, output_path):
+    """Ghép các file .wav phần của 1 chương, chèn khoảng lặng ĐỀU (cùng 1 độ
+    dài) giữa mỗi cặp file — wrapper tiện lợi giữ hành vi cũ (trước v5, khi
+    chưa cần độ dài khác nhau theo từng ranh giới) bằng cách gọi
+    concat_with_variable_silence() với cùng 1 giá trị lặp lại.
+
+    Trước đây hàm này còn tự phát hiện "chuyển chương" (dựa vào số trong tên
+    file dạng "_c<N>_p<M>.wav") để chèn khoảng lặng dài hơn (2.0s) tại điểm
+    đó — điều này không còn cần thiết: kể từ khi Agent Alpha đảm nhiệm việc
+    tách chương, MỖI thư mục chương luôn chỉ chứa các phần của ĐÚNG 1 chương
+    — 1 lệnh gọi concat_with_silence() không bao giờ còn bắc qua ranh giới 2
+    chương nữa, nên không còn "điểm chuyển chương" nào để phát hiện trong
+    danh sách wav_files truyền vào.
+    """
+    return concat_with_variable_silence(
+        ffmpeg, wav_files, [silence_duration] * (len(wav_files) - 1), output_path,
+    )
 
 def mix_bgm(ffmpeg, voice_path, bgm_path, output_path, bgm_volume=0.05):
     cmd = [ffmpeg, "-y", "-i", voice_path, "-stream_loop", "-1", "-i", bgm_path, "-filter_complex", f"[1:a]volume={bgm_volume}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=3", "-c:a", "pcm_s16le", output_path]
