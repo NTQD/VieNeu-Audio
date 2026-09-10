@@ -24,3 +24,10 @@ merged_models_cache/
 input.txt
 background_*.png
 thumbnail_*.png
+
+# Downloaded Piper voice models (large binaries, reproducibly fetchable from
+# https://huggingface.co/rhasspy/piper-voices - see scratch_check/test_piper_pause_step0.py
+# for the exact URL/voice used) - don't bloat git history with these.
+scratch_check/piper_voices/
+*.onnx
+*.onnx.json
