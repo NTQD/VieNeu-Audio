@@ -1,650 +1,324 @@
-# VoxDirector AI — Technical Specification for Implementation
+# VoxDirector AI — Technical Specification for Implementation (v4)
 
-**Document purpose:** This is an engineering handoff spec for an AI coding agent (Claude Code) to implement the VoxDirector AI upgrade on top of the existing VieNeu-Audio repository. It defines exactly what to build, what NOT to touch, data contracts between components, and acceptance criteria.
+**Document purpose:** Engineering handoff spec for an AI coding agent (Claude Code) to implement VoxDirector AI. This version supersedes v3 — see Section 0.
 
-**Project:** Upgrade VieNeu-Audio (a working, rule-based Vietnamese audiobook production pipeline) into a Multi-Agent system by inserting an AI Orchestration Layer of 4 LLM-driven Agents (codenamed **Alpha, Beta, Gamma, Delta**) between existing pipeline stages.
+---
 
-**Base repository:** `github.com/NTQD/VieNeu-Audio`
-**LLM provider:** Google Gemini API (Flash tier), called from Python, deployed on Google Cloud Run
-**Orchestration framework:** LangGraph
-**Vector store:** ChromaDB (for the Character/Terminology Glossary used by Agent Beta)
-**ASR (for QA):** faster-whisper (local, open-source, no API cost)
+## 0. Changelog
+
+### v4 → v5 — Punctuation-based pausing made conditional on an empirical test
+
+The team will first test whether Piper's own training already produces natural pausing at commas, periods, ellipses, etc. **Only if that test shows it's inadequate** will the punctuation-pause mechanism below be built. This is a pure rule-based (regex) step — deliberately kept out of Beta, since punctuation-to-pause-duration mapping needs no language understanding, only deterministic lookup. See Section 7.3 for the full conditional spec and Section 11's new Step 0.
+
+### v3 → v4 — Agent consolidation (3 agents instead of 4)
+
+The team noticed the former Beta (terminology consistency) and Gamma (expression-word insertion) were doing the same *shape* of work — look up a team-curated table, patch text accordingly, skip rather than guess when uncertain. They are merged into one agent. The former Delta (QA) is renumbered as the third agent in sequence.
+
+| Old name | Old role | New name | New role |
+|---|---|---|---|
+| Alpha | Chapters + genre/voice + emotion-flagging | **Alpha** | Same, **+ new: flags long-pause points** |
+| Beta | Terminology consistency (RAG) | **Beta** | **Merged** — terminology consistency AND expression-word insertion, in one pass, one LLM call per chapter |
+| Gamma | Expression-word insertion | *(retired — merged into Beta)* | — |
+| Delta | QA (ASR round-trip) | **Gamma** | Same QA role, renamed to be the third agent in the new 3-agent sequence |
+
+**Why merging Beta+Gamma also fixes a real bug risk:** in v3, Gamma had to re-locate Alpha's flagged segments inside text that Beta had already modified, using a fragile text-search-after-the-fact approach. With one agent doing both jobs in a single pass over the same text, that whole problem disappears — there is no intermediate modified-text handoff to search against.
+
+**New in v4:** pause-point flagging (Alpha) and a sentinel-marker mechanism (Beta inserts it, the splitter/postprocess modules consume it) — see Section 6.1 and Section 7.2.
 
 ---
 
 ## 1. Golden Rule — Read This First
 
-**Do not modify the internal logic of the existing pipeline modules.** They are in production and stable. The 4 new Agents are inserted _around_ these modules, calling them as-is. If a new Agent needs a new capability from an existing module (e.g. a new parameter), extend the module minimally and additively — never rewrite its core logic.
+**Do not modify the internal logic of existing pipeline modules unless a section below explicitly says otherwise.** Sanctioned exceptions, all documented in full below: the TTS invocation layer (Piper, Section 5), `subtitle_generator.py`'s timing algorithm (Section 7.1), and now **both `text_splitter.py` and `audio_postprocess.py`** for pause-point handling (Section 7.2). These are deliberate, scoped, documented changes — not a license to refactor these modules generally.
 
-Before writing any integration code, **inspect the actual current source** of each file listed in Section 2 to confirm exact function signatures — the descriptions below are based on the project's README and prior design discussion, not a byte-for-byte read of the current source. Treat function names/signatures below as the intended contract; verify and adjust against the real file before wiring calls.
-
----
-
-## 2. Existing System — What Already Works (Do Not Rewrite)
-
-| File                                                         | Responsibility                                                                                                                                                                                                                                                                    |
-| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `text_normalizer.py`                                         | Normalizes raw Vietnamese text — numbers, units, symbols — into spoken-word form.                                                                                                                                                                                                 |
-| `text_splitter.py`                                           | Splits normalized text into ~250-word, sentence-aligned chunks sized for the TTS engine.                                                                                                                                                                                          |
-| `auto_tts.py`                                                | Gradio orchestration app. Handles voice selection/cloning, batch rendering, chapter detection via `Chương N` regex heading match, skip-already-rendered logic, health-check. **Currently accepts `.txt` file drop only — see Section 4 for the required extension.**              |
-| `audio_postprocess.py`                                       | FFmpeg-based audio concatenation, configurable silence insertion between paragraphs/chapters, background music mixing.                                                                                                                                                            |
-| `subtitle_generator.py`                                      | Generates `.srt` subtitles using character-count-weighted timing (not forced alignment).                                                                                                                                                                                          |
-| `video_renderer.py`                                          | FFmpeg video rendering; auto-detects available H.264 encoder (NVENC / QuickSync / libx264).                                                                                                                                                                                       |
-| `make_video.py`                                              | CLI entry point that runs the post-production chain (audio → subtitle → video) standalone.                                                                                                                                                                                        |
-| VieNeu-TTS (third-party, installed via `pip install vieneu`) | The actual voice synthesis engine. Supports voice cloning, emotion cues (e.g. `[cười]`, `[thở dài]`), and a multi-speaker "Conversation" mode. **The current pipeline does not yet make use of emotion cues or multi-speaker mode** — this is one of the gaps Agent Gamma closes. |
-
-**Known limitation explicitly acknowledged in the existing README:** chapter detection relies on a `Chương N` heading regex; text without that heading pattern falls back to generic naming. Agent Alpha exists specifically to fix this.
+Before writing integration code, **inspect the actual current source** of each file in Section 2.
 
 ---
 
-## 3. Target Architecture
+## 2. Existing System Components
 
-```
-┌───────────────────────────────────────────────────────────┐
-│  auto_tts.py (Gradio UI — EXISTING, extend per Section 4)    │
-│  - Voice selection / cloning (existing)                      │
-│  - Voice audition / test-read (existing)                     │
-│  - Input: .txt drop (existing) + .docx drop (NEW — Section 4) │
-└──────────────────────────┬────────────────────────────────┘
-                           ▼
-┌───────────────────────────────────────────────────────────┐
-│  NEW: AI ORCHESTRATION LAYER (LangGraph)                     │
-│                                                               │
-│  raw_text                                                     │
-│     │                                                          │
-│     ▼                                                          │
-│  ① Alpha  — Ingestion Agent (LLM)                             │
-│     → segments raw text into chapters                         │
-│     │                                                          │
-│     ▼                                                          │
-│  ② Beta   — Consistency Agent (LLM + RAG/ChromaDB)             │
-│     → enforces glossary-consistent terminology per chapter     │
-│     │                                                          │
-│     ▼                                                          │
-│  [EXISTING] text_normalizer.py → text_splitter.py              │
-│     │                                                          │
-│     ▼                                                          │
-│  ③ Gamma  — Prosody Agent (LLM)                                │
-│     → tags narration/dialogue, speaker_id, emotion_tag          │
-│     │                                                          │
-│     ▼                                                          │
-│  [EXISTING] VieNeu-TTS engine (consumes Gamma's tags)           │
-│     │                                                          │
-│     ▼                                                          │
-│  [EXISTING] audio_postprocess.py → subtitle_generator.py        │
-│              → video_renderer.py                                │
-│     │                                                          │
-│     ▼                                                          │
-│  ④ Delta  — QA Agent (faster-whisper ASR round-trip)            │
-│     → computes Word Error Rate, flags suspect segments           │
-└───────────────────────────────────────────────────────────┘
-                           ▼
-                 Output: .mp4 + .srt + qa_report.json
-```
+| File | Responsibility | Notes |
+|---|---|---|
+| `text_normalizer.py` | Normalizes raw Vietnamese text into spoken-word form. | No change. Must run *after* Beta and *after* the sentinel marker has been stripped (Section 7.2) — normalizer should never see the marker token. |
+| `text_splitter.py` | Splits text into ~250-word chunks. | **Modified (sanctioned)** — must also treat the pause sentinel as a forced boundary. Section 7.2. |
+| `audio_postprocess.py` | FFmpeg audio concatenation, silence insertion, music mixing. | **Modified (sanctioned)** — boundaries flagged as pause-points get a longer silence than the ordinary default. Section 7.2. |
+| `subtitle_generator.py` | Generates `.srt` subtitles. | Timing algorithm rewritten — Section 7.1 (unchanged from v2/v3). |
+| `video_renderer.py` | FFmpeg video rendering, encoder auto-detect. | No change. |
+| `make_video.py` | Old CLI entry point. | Retired as entry point; superseded by the FastAPI backend. |
+| Piper TTS | Fixed preset voices, no cloning, no built-in emotion/pause tag syntax. | See Section 5. |
 
 ---
 
-## 4. Task: Extend `auto_tts.py` for `.docx` Input
+## 3. Single-Screen User Flow
 
-**Current state:** accepts `.txt` file drop only.
-**Required:** also accept `.docx` file drop, extract plain text, and feed it into the exact same downstream code path that `.txt` currently uses (i.e. do not create a parallel pipeline — converge to the same `raw_text: str` variable as early as possible).
-
-**Implementation guidance:**
-
-- Add `python-docx` to `requirements.txt`.
-- Add a small file-type dispatch: if the uploaded file extension is `.docx`, use `docx.Document(path)` and join all non-empty paragraph `.text` values with `\n` to produce the raw text string; if `.txt`, keep existing read logic unchanged.
-- Do not attempt to preserve `.docx` formatting (bold, italics, headings-as-styles) — plain text extraction only. Chapter structure is handled downstream by Agent Alpha, not by Word heading styles.
-- Add a unit test with a sample `.docx` file containing at least 2 "chapters" with no explicit `Chương N` text, to later validate Agent Alpha's semantic chapter detection (Section 6.1).
+1. **Landing:** greeting + text input area with drag-and-drop (`.txt`, `.docx`).
+2. **Submit → Alpha runs:** returns chapter count, detected genre, suggested voice (editable), and internally produces emotion-flag and pause-point candidates for Beta to act on — not shown as a separate step.
+3. **Optional manual inputs:** background image, background music, base pause duration (the *default* inter-chunk silence — separate from Alpha's *extra-long* dramatic pauses, see Section 7.2), subtitle burn-in toggle, QA (Gamma) toggle.
+4. **Processing, streamed via WebSocket:** "Reading & understanding text" (Alpha) → "Applying consistency & expression" (Beta) → "Generating voice" (Piper) → "Assembling audio/video" (existing pipeline, now pause-aware) → "Quality check" (Gamma, if enabled).
+5. **New-term confirmation panel** (Beta's terminology side) — inline, non-blocking, as before.
+6. **Preview & quality**, **segment correction**, **export** — all unchanged from v3.
 
 ---
 
-## 5. New Directory Structure
+## 4. `.docx` / `.txt` Input Handling
+Unchanged from v3.
 
-```
-voxdirector/
-├── agents/
-│   ├── __init__.py
-│   ├── state.py              # Shared LangGraph state schema
-│   ├── alpha_ingestion.py
-│   ├── beta_consistency.py
-│   ├── gamma_prosody.py
-│   └── delta_qa.py
-├── glossary/
-│   ├── __init__.py
-│   ├── schema.py              # Pydantic models for glossary entries
-│   └── store.py                # ChromaDB setup + retrieval helpers
-├── graph.py                    # LangGraph wiring — connects Alpha→Beta→[existing]→Gamma→[existing]→Delta
-├── llm_client.py                # Gemini API client wrapper (single place to swap models/keys)
-└── config.py                    # CONFIDENCE_THRESHOLD, model names, etc.
-```
+---
+
+## 5. Piper TTS Integration
+Unchanged from v3 in substance. Restating the key constraint that motivates Section 7.2's design: Piper has no built-in syntax for "pause here for longer" — so long dramatic pauses are implemented entirely at the audio-splicing layer (`audio_postprocess.py`), not by asking Piper to do anything special. Piper only ever receives plain, marker-free text.
+
+### 5.1 Genre → Voice Preset Mapping — unchanged
+### 5.2 Device Detection — unchanged
 
 ---
 
 ## 6. Agent Specifications
 
-### 6.0 Shared Conventions (apply to all 4 agents)
-
-- **LLM provider:** Google Gemini API. Use the official `google-genai` Python SDK. Centralize the client instantiation in `llm_client.py` so the model name/provider can be swapped in one place later if needed.
-- **Output format:** All agents return **structured JSON only** — no prose, no markdown fences around the JSON, no explanatory text outside the JSON object unless a field is explicitly designated for that purpose. Use Gemini's structured output / JSON mode rather than asking the model to "please return JSON" in free text.
-- **Confidence handling:** Any field that involves the model's judgment (not a deterministic transformation) MUST include a `confidence_score` float in `[0.0, 1.0]`.
-- **Confidence threshold: `CONFIDENCE_THRESHOLD = 0.75`** (define once in `config.py`, import everywhere — do not hardcode in multiple files). Below threshold: the agent still returns its best-guess value but the caller must treat it as provisional (see per-agent fallback behavior below); do not block the pipeline on low confidence.
-- **Field naming:** JSON keys in English (`snake_case`). String _values_ inside those fields remain in Vietnamese (the language of the source novel) — never translate or paraphrase user content.
-- **No hallucination beyond scope:** every agent's system prompt below encodes a different degree of "permitted inference" appropriate to its task — see each agent's "Anti-hallucination rule" below. Implement exactly as specified; do not loosen these rules for convenience.
+### 6.0 Shared Conventions
+Unchanged — Gemini API via `google-genai`, structured JSON, English keys/Vietnamese values, `CONFIDENCE_THRESHOLD = 0.75`, never block on low confidence.
 
 ---
 
-### 6.1 Agent Alpha — Ingestion Agent
+### 6.1 Agent Alpha — Ingestion, Voice-Suggestion & Flagging Agent
 
-**Purpose:** Segment raw input text into chapters, including cases with no explicit `Chương N` heading (fixes the acknowledged limitation of the existing pipeline).
+**Purpose:** (1) Segment chapters. (2) Detect genre, suggest voice. (3) Flag segments with clear emotional signal. (4) **New:** flag points needing a long dramatic pause.
 
-**Input:** `raw_text: str` (from `.txt` or the new `.docx` path in `auto_tts.py`)
+**Input:** `raw_text: str` + current valid emotion-label set (from the team-uploaded lexicon, Section 6.3's data management subsection — same mechanism as v3, now read by Alpha for labeling and by Beta for insertion).
 
 **Output schema:**
-
 ```json
 {
   "chapters": [
-    {
-      "start_index": 0,
-      "end_index": 1520,
-      "confidence_score": 0.91,
-      "needs_review": false
-    }
+    {"start_index": 0, "end_index": 1520, "confidence_score": 0.91, "needs_review": false}
+  ],
+  "detected_genre": "kiem_hiep",
+  "suggested_voice_id": "male_deep_01",
+  "genre_confidence_score": 0.82,
+  "emotion_flagged_segments": [
+    {"quoted_text": "Cô ấy cười nói: \"Đúng vậy đó!\"", "emotion_label": "cuoi", "confidence_score": 0.86}
+  ],
+  "pause_points": [
+    {"quoted_text": "...", "reason": "scene transition / long dramatic silence implied", "confidence_score": 0.79}
   ]
 }
 ```
 
-**Anti-hallucination rule:** Alpha may infer chapter boundaries from semantic cues (time/place shifts, narrator perspective changes) when no explicit heading exists. Every boundary must carry `confidence_score`. If `confidence_score < CONFIDENCE_THRESHOLD`, still return the boundary but set `needs_review: true` — never silently assert a low-confidence boundary as certain. Alpha must never summarize, paraphrase, or alter the source text — only report index positions.
+**What counts as a pause point:** a scene break, a beat of silence implied by narration (e.g. "Cả căn phòng chìm vào im lặng."), or a chapter-ending cliffhanger line — text-based evidence only, never inferred purely from "this feels dramatic." If uncertain, do not flag (same no-fallback-needed logic as emotion flags — an unflagged point just means the default pause length applies, which is always a safe outcome).
 
-**Fallback behavior when below threshold:** Do not block. Downstream (Beta) still receives the chapter as segmented; the `needs_review` flag is surfaced in logs/UI for the Data & Domain Curator to review after the fact — pipeline continues regardless.
-
-**System prompt (Vietnamese — use verbatim in code, this is the actual production prompt):**
-
+**System prompt — append to the existing Alpha prompt (chapters + genre, carried over verbatim from v3), add:**
 ```
-Bạn là Alpha, một biên tập viên bản thảo kỳ cựu tại nhà xuất bản, nhiều năm
-kinh nghiệm đọc và phân đoạn thảo tiểu thuyết dài kỳ trước khi in ấn. Bạn có
-con mắt tinh tường nhận ra điểm chuyển chương ngay cả khi tác giả quên đánh
-dấu, nhưng luôn thận trọng — không bao giờ khẳng định chắc nịch khi bản thân
-còn phân vân.
-
-VAI TRÒ: Nhận diện và phân tách ranh giới chương trong văn bản tiểu thuyết thô.
-
-NĂNG LỰC: Bạn hiểu cấu trúc văn học tiểu thuyết (chuyển cảnh, thay đổi thời
-gian/không gian, chuyển góc nhìn nhân vật kể chuyện) và quy ước trình bày
-chương phổ biến trong tiểu thuyết mạng Trung Quốc dịch Việt.
-
-NGUYÊN TẮC:
-- Được phép suy đoán ranh giới chương dựa trên dấu hiệu ngữ nghĩa khi văn bản
-  không có heading tường minh dạng "Chương N".
-- Mỗi ranh giới đề xuất phải kèm confidence_score (0.0 đến 1.0).
-- Nếu confidence_score dưới 0.75, vẫn trả về đề xuất nhưng bắt buộc gắn
-  needs_review = true.
-- Cấm tuyệt đối: không được tự bịa nội dung không có trong văn bản gốc, không
-  tóm tắt, không diễn giải lại câu chữ dưới bất kỳ hình thức nào.
-
-NHIỆM VỤ:
-- Đọc toàn bộ văn bản thô được cung cấp trong một lượt xử lý.
-- Xác định các vị trí (index) đánh dấu điểm bắt đầu của mỗi chương.
-- Làm sạch văn bản: loại bỏ ký tự thừa, khoảng trắng bất thường, watermark
-  hoặc quảng cáo lẫn trong bản crawl (nếu phát hiện).
-- Trả về danh sách chương đã tách kèm confidence_score cho từng ranh giới.
-
-TƯ DUY: đọc toàn bộ văn bản một lượt; quét tìm heading tường minh trước
-("Chương N", "Chapter N"); nếu không tìm thấy, phân tích các dấu hiệu ngữ
-nghĩa; với mỗi ranh giới nghi ngờ, tự đánh giá và gán confidence_score; tổng
-hợp kết quả đúng theo JSON schema, không thêm hoặc bớt field.
-
-PHONG CÁCH: Output là JSON thuần, không kèm giải thích văn xuôi. Tên field
-tiếng Anh; giá trị text (nếu có) giữ nguyên tiếng Việt, không dịch/diễn giải.
+NHIỆM VỤ BỔ SUNG (3): Ngoài việc gắn nhãn cảm xúc, hãy tìm các điểm trong văn
+bản cần một khoảng ngắt dài hơn bình thường — ví dụ: chuyển cảnh, khoảnh khắc
+im lặng được miêu tả rõ trong lời văn, hoặc câu kết chương gây hồi hộp. Với
+mỗi điểm tìm được, trích một đoạn văn bản ngắn đặc trưng làm quoted_text kèm
+lý do ngắn gọn (reason) và confidence_score. CHỈ dựa trên bằng chứng rõ ràng
+trong câu chữ — không suy diễn cảm tính.
 ```
 
-**Integration point:** Called once per uploaded document, before any existing pipeline module runs. Its output list of chapters is what Beta iterates over.
+**Integration point:** Runs once per submission, before Beta. Both `emotion_flagged_segments` and `pause_points` are passed to Beta, which acts on both in the same pass (Section 6.2).
 
 ---
 
-### 6.2 Agent Beta — Consistency Agent (RAG)
+### 6.2 Agent Beta — Consistency & Expression Agent (merged)
 
-**Purpose:** Keep character names, place names, and special terms consistent across a long novel using a retrieval-augmented glossary, directly solving the "Red Matt should never become 'Đỏ Mát'" problem.
+**Purpose, in one LLM call per chapter:** (1) enforce glossary-consistent terminology (as in all prior versions). (2) Insert human-curated expression words at Alpha's flagged emotion segments. (3) Insert a pause sentinel marker at Alpha's flagged pause points. All three happen against the *same* text in the *same* pass — no cross-agent text handoff, which is what made this safe to merge (see Section 0).
 
-**Input:** `chapter_text: str` (one chapter from Alpha's output) + `glossary_context: list[dict]` (retrieved from ChromaDB)
+**Input:**
+- `chapter_text: str` (from Alpha's chapter split)
+- `glossary_context: list[dict]` (RAG-retrieved from ChromaDB, as before)
+- `emotion_flagged_segments` and `pause_points` (from Alpha, this same chapter)
+- Current emotion lexicon (Section 6.3's data management — `emotion_label → list of candidate words`)
+- The pause sentinel token, e.g. `[[PAUSE_LONG]]` (a fixed constant in `config.py`, not something Beta invents)
 
-**Glossary schema** (`glossary/schema.py`):
-
-```python
-from pydantic import BaseModel
-from typing import Literal, Optional
-
-class GlossaryEntry(BaseModel):
-    original_term: str
-    entity_type: Literal["character", "place", "term"]
-    canonical_form: str
-    pronunciation_note: Optional[str] = None
-    first_seen_chapter: int
-```
+**Processing:**
+1. Terminology pass: exactly as in all prior versions — apply known `canonical_form` values, propose `new_entry_candidates` for anything not in the glossary, never invent a spelling.
+2. Expression pass: for each `emotion_flagged_segments` entry, locate `quoted_text` within *this same* `chapter_text` (should be a reliable exact/near-exact match since Beta is working on the original chapter text directly, not a downstream-modified copy). If the lexicon's candidate word for that label isn't already present, insert one (varied across the chapter, not always the same word). If no match is found, skip and note why.
+3. Pause pass: for each `pause_points` entry, locate `quoted_text` the same way, and insert the literal sentinel token `[[PAUSE_LONG]]` immediately after the matched point. If no match, skip.
 
 **Output schema:**
-
 ```json
 {
-  "corrected_text": "...",
-  "applied_terms": [{ "original": "Red Matt", "canonical_form": "Red Matt" }],
+  "corrected_text": "... (terminology-corrected + expression words + pause sentinels inserted) ...",
+  "applied_terms": [{"original": "Red Matt", "canonical_form": "Red Matt"}],
   "new_entry_candidates": [
-    {
-      "term": "Huyết Nguyệt Tông",
-      "entity_type": "term",
-      "confidence_score": 0.83
-    }
+    {"term": "Huyết Nguyệt Tông", "entity_type": "term", "confidence_score": 0.83}
+  ],
+  "expression_report": [
+    {"matched": true, "emotion_label": "cuoi", "inserted_word": "Haha", "skipped_reason": null}
+  ],
+  "pause_report": [
+    {"matched": true, "skipped_reason": null}
   ]
 }
 ```
 
-**Anti-hallucination rule (strictest of all 4 agents):** Beta must NEVER invent a canonical form for a term already present in the glossary — it must use the stored `canonical_form` exactly. For genuinely new terms not yet in the glossary, Beta must NOT decide a standard spelling itself — it only proposes `new_entry_candidates` for human confirmation. Every decision must be traceable to a specific glossary entry; there is zero freeform inference permitted for terminology decisions.
+**Anti-hallucination rules (combined, apply independently to each of the three passes):**
+- Terminology: zero freeform inference — every decision traceable to a specific glossary entry, exactly as in all prior versions.
+- Expression: only use lexicon-listed words for the given label; skip rather than guess if no match or word already present.
+- Pause: only insert the exact fixed sentinel token; never invent alternative markers; skip if no match.
 
-**RAG mechanics:**
-
-- Vector store: ChromaDB, persistent collection named `character_glossary`.
-- Embedding: use a free local embedding model (e.g. `sentence-transformers/all-MiniLM-L6-v2` via `HuggingFaceEmbeddings`) — do not depend on a paid embedding API for this.
-- Retrieval: before calling the LLM for a chapter, query the collection with the chapter text (or its key entities) for the top-k (suggest k=10) most relevant existing glossary entries, and inject them into the prompt as `glossary_context`.
-- After processing, any `new_entry_candidates` approved by the Data Curator should be written back into the ChromaDB collection so subsequent chapters can retrieve them.
-
-**System prompt (Vietnamese — verbatim):**
-
+**System prompt (Vietnamese — verbatim, replaces the separate v3 Beta and Gamma prompts):**
 ```
-Bạn là Beta, biên tập viên phụ trách tính nhất quán thuật ngữ tại một nhà
-xuất bản sách dịch lâu năm. Bạn từng chứng kiến nhiều bản dịch bị độc giả
-phàn nàn vì tên nhân vật đổi cách viết giữa chừng, nên bạn cực kỳ nguyên tắc:
-chỉ tin vào bảng thuật ngữ đã được xác nhận, không bao giờ tự "chế" cách viết
-mới dù có tự tin đến đâu.
+Bạn là Beta, biên tập viên phụ trách tính nhất quán thuật ngữ VÀ chèn các
+yếu tố biểu cảm/ngắt nghỉ cho một nhà xuất bản sách dịch lâu năm. Bạn cực kỳ
+nguyên tắc trên cả hai mặt: chỉ tin vào bảng thuật ngữ đã xác nhận cho tên
+riêng, và chỉ dùng từ có trong danh sách được cung cấp cho biểu cảm — không
+bao giờ tự "chế" ở bất kỳ phần nào.
 
-VAI TRÒ: Duy trì tính nhất quán của tên riêng, địa danh và thuật ngữ xuyên
-suốt toàn bộ tác phẩm, sử dụng RAG để tra cứu Character Glossary đã tích luỹ.
-
-NĂNG LỰC: Bạn hiểu nguyên tắc giữ nguyên/phiên âm tên riêng trong dịch thuật
-Trung–Việt (ví dụ: tên phương Tây giữ nguyên dạng gốc, không phiên âm Hán
-Việt). Dữ liệu bạn được phép dùng: Character Glossary truy xuất từ ChromaDB
-tương ứng với chương đang xử lý — đây là NGUỒN DUY NHẤT được phép dùng để xác
-định cách viết chuẩn.
+VAI TRÒ: Với mỗi chương văn bản, bạn thực hiện ba việc trong một lượt xử lý:
+(1) duy trì nhất quán tên riêng/thuật ngữ dựa trên Character Glossary tra
+cứu qua RAG; (2) chèn từ biểu cảm phù hợp tại các đoạn được đánh dấu có cảm
+xúc; (3) chèn dấu hiệu ngắt nghỉ dài tại các điểm được đánh dấu cần khoảng
+lặng.
 
 NGUYÊN TẮC:
-- Cấm tuyệt đối tự sáng tạo cách viết mới cho bất kỳ tên riêng/thuật ngữ nào
-  đã tồn tại trong glossary — bắt buộc dùng đúng canonical_form đã lưu.
-- Với thuật ngữ hoàn toàn mới (chưa có trong glossary): không được tự ý
-  chuẩn hoá — chỉ trích xuất và đề xuất dưới dạng new_entry_candidate kèm
-  confidence_score, chờ xác nhận từ con người.
-- Mọi quyết định phải truy nguyên được về một nguồn dữ liệu cụ thể trong
-  glossary, không có ngoại lệ.
-
-NHIỆM VỤ:
-- Nhận văn bản chương hiện tại cùng glossary context truy xuất từ RAG.
-- Rà soát toàn bộ tên riêng, địa danh, thuật ngữ đặc thù xuất hiện trong văn
-  bản.
-- Áp dụng canonical_form đã có trong glossary cho các thuật ngữ đã biết.
-- Phát hiện và đề xuất (không tự áp dụng) đối với thuật ngữ mới.
-
-TƯ DUY: quét toàn bộ văn bản tìm mọi tên riêng/địa danh/thuật ngữ đặc thù;
-với mỗi thuật ngữ, truy vấn xem đã có trong glossary_context chưa; nếu có,
-thay thế/xác nhận theo canonical_form; nếu không có, chỉ đánh dấu ứng viên
-mới; không suy diễn thêm ngoài phạm vi văn bản và glossary được cung cấp.
+- Thuật ngữ: cấm tuyệt đối tự sáng tạo cách viết mới cho thuật ngữ đã có
+  trong glossary; thuật ngữ mới chỉ được đề xuất (new_entry_candidates), không
+  tự áp dụng.
+- Biểu cảm: chỉ chèn từ có trong danh sách lexicon được cung cấp cho đúng
+  nhãn cảm xúc; nếu đoạn văn đã có từ biểu cảm tương tự, không chèn thêm.
+- Ngắt nghỉ: chỉ chèn đúng token cố định được cung cấp, không tự tạo ký hiệu
+  khác.
+- Với cả biểu cảm và ngắt nghỉ: nếu không định vị được đoạn văn khớp với
+  quoted_text được cung cấp, bỏ qua và ghi rõ lý do — không đoán vị trí khác.
 
 PHONG CÁCH: Output JSON, field tiếng Anh, giá trị text tiếng Việt giữ nguyên
-gốc. Không thêm bình luận hay giải thích lý do.
+gốc trừ phần được chèn thêm theo đúng quy định trên.
 ```
 
-**Integration point:** Runs per-chapter, after Alpha, before the existing `text_normalizer.py`. Beta's `corrected_text` becomes the input to `text_normalizer.py` — do not feed Alpha's raw chapter text directly into the normalizer, it must pass through Beta first.
+**Integration point:** Runs once per chapter, after Alpha, before `text_normalizer.py`. Beta's `corrected_text` (now carrying terminology fixes + expression words + pause sentinels, all at once) is what feeds the normalizer next.
 
 ---
 
-### 6.3 Agent Gamma — Prosody Agent
+### 6.3 Agent Gamma — QA Agent (renamed from Delta)
 
-**Purpose:** Classify narration vs. dialogue and tag emotion/speaker so VieNeu-TTS's existing (currently unused) emotion cues and multi-speaker mode can be exploited.
+**Purpose, schema, prompt, and toggle behavior:** identical to the agent named "Delta" in v3 — ASR round-trip via faster-whisper, Word Error Rate, flagged segments, on/off toggle, no speculative error-cause commentary. Only the name changes (third agent in the new 3-agent sequence). Carry the v3 Delta system prompt over verbatim, just referring to the agent as Gamma in code/comments.
 
-**Input:** normalized/split text chunk (output of the existing `text_splitter.py`, which itself runs on Beta's corrected text)
+---
 
-**Output schema:**
+### Data Management — Human-Curated Uploads (carried over from v3, unchanged in substance)
+
+Emotion lexicon and glossary seed are still team-authored, uploadable, never hardcoded — same file formats and endpoints as v3, with one naming update: the emotion lexicon is now consumed by **Alpha** (for valid label set) and **Beta** (for candidate words to insert), not by a separate "Gamma" as v3 had it (since that agent no longer exists under that name).
+
+The pause sentinel token itself (`[[PAUSE_LONG]]`) is **not** user-uploaded data — it is a fixed technical constant in `config.py`, since it must exactly match what `text_splitter.py` and `audio_postprocess.py` look for in code. Do not make this configurable via the same upload mechanism as the lexicon; keep it a single source-of-truth constant.
+
+---
+
+## 7. Text/Audio Timing Mechanics
+
+### 7.1 Segment-Level Re-render & Subtitle Timing
+Unchanged from v2/v3 — measured-duration-based timing (via `ffprobe`) with delta-shift on re-render.
+
+### 7.2 Pause-Point Handling (new)
+
+**Mechanism:** Beta inserts the literal sentinel string `[[PAUSE_LONG]]` into `corrected_text` at each successfully-matched pause point (Section 6.2). This travels through `text_normalizer.py` — **the normalizer must be checked to ensure it passes this token through unchanged rather than trying to "normalize" it as if it were a number or symbol; if the normalizer would mangle it, strip the sentinel out beforehand and re-insert it as chunk metadata rather than inline text.** Verify this against the actual normalizer implementation before assuming inline pass-through works.
+
+**In `text_splitter.py` (sanctioned modification):** when building ~250-word chunks, treat any occurrence of `[[PAUSE_LONG]]` as a forced chunk boundary regardless of the current word count in that chunk (i.e. always end a chunk exactly at the sentinel, even if under 250 words) — then strip the sentinel from the text before that chunk is handed to Piper. Record, per chunk boundary, whether it was a pause-flagged boundary or an ordinary word-count boundary — this per-boundary flag is what `audio_postprocess.py` needs next.
+
+**In `audio_postprocess.py` (sanctioned modification):** accept a per-boundary silence-duration list instead of one single global silence constant. Ordinary boundaries get the existing default (now user-adjustable per Section 3, step 3). Boundaries flagged as pause-points get a longer duration — define `PAUSE_LONG_DURATION_MS` in `config.py` as a separate constant from the ordinary default, with a sensible starting value (e.g. 1200–1500ms vs. an ordinary ~300–500ms default) to be tuned empirically once the team listens to real output.
+
+---
+
+### 7.3 Punctuation-Based Pause Handling (Conditional — Test Before Building)
+
+**Do not build this section's mechanism until the empirical test in Section 11, Step 0 has actually been run and has shown it necessary.** If Piper's own training already produces acceptable natural pausing at punctuation, skip this entire section — the pipeline stays exactly as Sections 6–7.2 describe, with no additional punctuation-handling step.
+
+**If the test shows Piper's natural pausing is inadequate, build as follows:**
+
+**Where it lives:** a pure rule-based (regex) function, not an LLM agent, not part of Beta. Runs after Beta, after `text_normalizer.py`, immediately before `text_splitter.py` — operating on final, normalized text just before it gets chunked for Piper.
+
+**Mechanism:** for each punctuation mark matched by regex, insert a short numbered sentinel token (e.g. `[[PAUSE_P_1]]`, `[[PAUSE_P_2]]`, ... — reuse the same sentinel *pattern* as `[[PAUSE_LONG]]` from Section 7.2, but these are much shorter, much more frequent pauses, so they should NOT force a chunk boundary the way `[[PAUSE_LONG]]` does — see the distinction below). `text_splitter.py` and `audio_postprocess.py` need to treat these two sentinel families differently:
+- `[[PAUSE_LONG]]` (Section 7.2, from Alpha/Beta's dramatic-pause flagging) → forces a chunk boundary, gets a long silence.
+- `[[PAUSE_P_n]]` (this section, from punctuation, if built at all) → does **not** force a chunk boundary by itself (that would fragment audio into far too many tiny clips, causing audible "seams" — the exact risk flagged before building this). Instead, these are resolved *within* Piper's synthesis of a chunk if Piper can accept inline pause hints in its input format, OR (if Piper cannot) they are used to further subdivide only at natural sentence boundaries within a chunk, synthesize those sub-pieces separately, and concatenate with the correspondingly short silence — verify which of these two paths Piper's actual API supports before implementation; do not assume.
+
+**Human-curated punctuation-to-duration table** (uploadable, same philosophy as the emotion lexicon in Section 6.3 — team can edit without touching code), stored at `data/punctuation_pauses.json`:
 
 ```json
 {
-  "segments": [
-    {
-      "text": "...",
-      "segment_type": "narration",
-      "speaker_id": null,
-      "emotion_tag": null,
-      "confidence_score": 0.95
-    },
-    {
-      "text": "...",
-      "segment_type": "dialogue",
-      "speaker_id": "character_a",
-      "emotion_tag": "cuoi",
-      "confidence_score": 0.88
-    }
-  ]
+  ",": 150,
+  ".": 400,
+  "!": 400,
+  "?": 400,
+  "...": 700,
+  "…": 700,
+  ";": 300,
+  ":": 300,
+  "-": 200,
+  "–": 200,
+  "—": 250,
+  "(": 100,
+  ")": 100,
+  "\"": 50,
+  "'": 50,
+  "“": 50,
+  "”": 50,
+  "?!": 500,
+  "!?": 500
 }
 ```
 
-**Anti-hallucination rule (strictest "prefer null" policy):** Gamma may infer speaker and emotion from context, punctuation, and reporting verbs (e.g. "cô cười nói"). Every tag requires `confidence_score`. If below `CONFIDENCE_THRESHOLD`, the corresponding field (`speaker_id` and/or `emotion_tag`) must be `null` rather than a guessed value — a neutral read is always preferable to a wrong emotional read. Gamma must never invent dialogue or plot content not present in the source text.
+**Important edge case — the Vietnamese dialogue dash:** a `-` at the *start* of a line (e.g. `- Anh đi đâu đấy?`) marks a new speaker's dialogue line in Vietnamese literary convention — this is a different function from a mid-sentence hyphen or en-dash used parenthetically, and likely warrants a different (probably longer) pause than the generic `-`/`–` entries above, plus different regex detection (anchored to line-start, not any `-` character anywhere). Treat this as a **separate table key** (e.g. `"dialogue_dash_line_start": 350`) with its own regex pattern (`^\s*-\s`), not the same key as a generic hyphen. Flag this to the team as needing its own test/tuning pass, since it's the most linguistically-specific case in this table.
 
-**Fallback behavior:** `null` emotion_tag / speaker_id simply means VieNeu-TTS renders that segment with the default/narration voice and neutral tone — this is a safe, always-valid fallback, not an error state.
-
-**System prompt (Vietnamese — verbatim):**
-
-```
-Bạn là Gamma, đạo diễn lồng tiếng dày dạn kinh nghiệm chỉ đạo diễn xuất cho
-audiobook và phim hoạt hình. Bạn tinh tế trong việc đọc vị cảm xúc nhân vật
-qua câu chữ, nhưng luôn tôn trọng nguyên tác — không bao giờ "diễn" thêm cảm
-xúc mà văn bản gốc không thể hiện rõ.
-
-VAI TRÒ: Phân tích văn bản để chỉ đạo diễn xuất giọng đọc — phân loại lời
-thoại/lời dẫn truyện và gán nhãn cảm xúc phù hợp cho từng đoạn.
-
-NĂNG LỰC: Bạn biết các emotion cue và chế độ multi-speaker mà VieNeu-TTS hỗ
-trợ — danh sách tag hợp lệ được cung cấp kèm theo mỗi lần gọi.
-
-NGUYÊN TẮC:
-- Được phép suy đoán loại người nói (narration/dialogue) và cảm xúc dựa trên
-  ngữ cảnh, dấu câu, động từ tường thuật.
-- Mỗi nhãn gán phải kèm confidence_score. Nếu dưới ngưỡng 0.75, để trống
-  (null) nhãn emotion thay vì đoán đại.
-- Cấm tuyệt đối: không được tự thêm lời thoại hoặc tình tiết không có trong
-  văn bản gốc.
-
-NHIỆM VỤ:
-- Chia văn bản thành các đoạn nhỏ theo lời dẫn truyện và lời thoại từng nhân
-  vật.
-- Gán speaker_id cho mỗi đoạn thoại dựa vào tên nhân vật trong ngữ cảnh gần
-  nhất.
-- Gán emotion_tag phù hợp trong danh sách tag hợp lệ được cung cấp.
-- Giữ nguyên nội dung văn bản gốc, chỉ thêm nhãn.
-
-TƯ DUY: đọc đoạn văn theo thứ tự; xác định ranh giới lời dẫn/lời thoại qua
-dấu ngoặc kép và động từ tường thuật; với mỗi đoạn thoại, truy ngược ngữ cảnh
-gần nhất để xác định speaker; đánh giá tín hiệu cảm xúc rõ ràng, không suy
-diễn tâm lý sâu xa; gán confidence_score cho từng quyết định.
-
-PHONG CÁCH: Output JSON, field tiếng Anh, giá trị text tiếng Việt. Ưu tiên
-null hơn là đoán khi không chắc chắn — nguyên tắc "thà thiếu còn hơn sai" áp
-dụng nghiêm ngặt nhất ở Agent này.
-```
-
-**Integration point:** Runs after `text_splitter.py`, before the VieNeu-TTS call. Gamma's tagged segments become the actual input payload to VieNeu-TTS's synthesis call (mapping `emotion_tag` → VieNeu-TTS emotion cue syntax, `speaker_id` → VieNeu-TTS multi-speaker voice selection). Confirm VieNeu-TTS's exact expected input format from its own API before wiring this mapping.
+**Backend endpoint:** add `POST /api/settings/punctuation-pauses` and `GET /api/settings/punctuation-pauses` alongside the emotion-lexicon endpoints in Section 6.3's data management subsection — same replace-on-upload behavior.
 
 ---
 
-### 6.4 Agent Delta — QA Agent
+## 8. Frontend & Backend Architecture
 
-**Purpose:** Objectively verify rendered audio quality via ASR round-trip, producing a measurable Word Error Rate.
-
-**Input:** rendered audio file path (output of `audio_postprocess.py`) + the original source text for that chapter
-
-**Output schema:**
-
-```json
-{
-  "word_error_rate": 0.06,
-  "flagged_segments": [
-    {
-      "segment_index": 14,
-      "original_text": "...",
-      "asr_transcript": "...",
-      "deviation_score": 0.34
-    }
-  ]
-}
-```
-
-**Anti-hallucination rule:** Delta must not speculate on _why_ an error occurred (e.g. "possibly a regional pronunciation issue") without evidence in the transcript diff. All reporting must be grounded in measured deviation between ASR transcript and source text — no subjective commentary.
-
-**Implementation:**
-
-```python
-from faster_whisper import WhisperModel
-import jiwer
-
-model = WhisperModel("medium", device="cpu", compute_type="int8")
-
-def verify_audio_quality(audio_path: str, original_text: str) -> dict:
-    segments, _ = model.transcribe(audio_path, language="vi")
-    transcript = " ".join(seg.text for seg in segments)
-    wer = jiwer.wer(original_text, transcript)
-    return {"word_error_rate": wer, "transcript": transcript, "passed": wer < 0.08}
-```
-
-Use the `medium` Whisper model size for final evaluation runs (better accuracy); a smaller/faster model may be used during iterative development to save time, but the number reported in the final KPI report must come from `medium` or larger.
-
-**System prompt (Vietnamese — verbatim, used only for the segment-flagging/summary step, not for the WER computation itself which is pure code):**
-
-```
-Bạn là Delta, kiểm toán viên chất lượng âm thanh tỉ mỉ, làm việc theo phương
-pháp luận rõ ràng và khách quan tuyệt đối. Bạn không đưa ra nhận định cảm
-tính, chỉ trình bày sự thật dựa trên số liệu đo lường được, để con người là
-người ra quyết định cuối cùng.
-
-VAI TRÒ: Kiểm định chất lượng âm thanh đầu ra bằng phương pháp đối chiếu ASR
-round-trip, đo lường độ chính xác bằng số liệu khách quan.
-
-NGUYÊN TẮC:
-- Không được tự suy diễn nguyên nhân lỗi nếu không có bằng chứng cụ thể
-  trong transcript đối chiếu.
-- Chỉ báo cáo dựa trên sai khác đo được — không phỏng đoán lý do nếu không
-  kiểm chứng được bằng số liệu.
-- Với đoạn nghi ngờ lỗi: confidence_score/deviation_score phải dựa trên độ
-  lệch ký tự/từ đo được, không dựa trên cảm tính.
-
-NHIỆM VỤ:
-- Nhận transcript ASR và văn bản gốc tương ứng theo từng chương.
-- Tính Word Error Rate tổng thể cho toàn chương.
-- Xác định các đoạn có sai lệch cao bất thường so với mặt bằng chung của
-  chương (flagged_segments).
-- Tổng hợp báo cáo kèm số liệu cụ thể, chính xác.
-
-PHONG CÁCH: Output JSON, field tiếng Anh, giá trị text tiếng Việt. Số liệu
-chính xác đến hai chữ số thập phân.
-```
-
-**Integration point:** Runs after `video_renderer.py` (or in parallel once audio is finalized, before video render if you want to gate on QA — team's choice). Output `qa_report.json` is consumed by a human (QA & Documentation role), not by any downstream Agent.
+Unchanged from v3's structure, with these renames/adjustments:
+- `agents/gamma_prosody.py` (v3, retired) is removed; `agents/delta_qa.py` is renamed `agents/gamma_qa.py`.
+- `agents/beta_consistency.py` now contains the merged consistency+expression logic (absorbing what would have been a separate expression module).
+- `DataManagementPanel.tsx` (frontend) unchanged in purpose, just reflects that the lexicon now visibly feeds "Alpha + Beta" rather than a separate Gamma, if the UI displays any such labeling to the user at all (likely not necessary — this is an implementation detail, not user-facing).
 
 ---
 
-## 7. LangGraph Wiring (`graph.py`)
+## 9. Acceptance Criteria (KPIs)
 
-**State schema** (`agents/state.py`):
+All KPIs from v3 remain, with the emotion-match-rate KPI now measured against Beta's single-pass matching (Section 6.2) instead of a separate cross-agent handoff — the target (>90% match rate) and rationale are unchanged, just the responsible component changed. Add:
 
-```python
-from typing import TypedDict, Optional
-
-class VoxDirectorState(TypedDict):
-    raw_text: str
-    chapters: list[dict]              # Alpha output
-    current_chapter_index: int
-    glossary_context: list[dict]      # retrieved from ChromaDB for current chapter
-    corrected_text: str               # Beta output
-    normalized_text: str              # existing text_normalizer.py output
-    split_chunks: list[str]           # existing text_splitter.py output
-    tagged_segments: list[dict]       # Gamma output
-    rendered_audio_path: str
-    final_video_path: str
-    qa_report: Optional[dict]         # Delta output
-```
-
-**Graph structure:** linear per-chapter pipeline — Alpha runs once on the full document to produce the chapter list; then for each chapter: Beta → [existing normalizer/splitter] → Gamma → [existing TTS/postprocess/subtitle/video] → Delta. Implement chapter iteration as a loop that invokes the graph once per chapter, or as a LangGraph subgraph — either is acceptable; prioritize whichever is simpler to debug within the timeline.
-
-**Critical constraint:** Do not use any "auto model routing" or multi-provider failover mechanism for these calls. Every agent call in a given pipeline run must go to the same, explicitly pinned Gemini model. Non-deterministic model switching between calls would undermine the reproducibility that Agent Beta and the KPI evaluation (Section 8) depend on.
+| Metric | Target | How to measure |
+|---|---|---|
+| Pause-point match rate | >90% of Alpha's flagged pause points successfully matched by Beta in the same pass | Test set, log `matched: false` rate for `pause_report` |
+| Pause duration audible difference | Long pauses perceptibly longer than ordinary inter-chunk silence on playback | Human listening check, not an automated metric |
 
 ---
 
-## 8. Acceptance Criteria (KPIs)
-
-| Metric                             | Target                                      | How to measure                                                                                                                |
-| ---------------------------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Word Error Rate (Delta)            | < 8%                                        | `jiwer.wer()` on a held-out test set of at least 10 chapters                                                                  |
-| Terminology consistency (Beta)     | > 95%                                       | Manual spot-check: pick 5 recurring named entities, verify identical `canonical_form` used across all chapters they appear in |
-| Chapter detection accuracy (Alpha) | > 90%                                       | Compare against manually-labeled chapter boundaries on a test set of chapters with NO `Chương N` heading                      |
-| Pipeline stability                 | No crashes over 20 consecutive chapters     | Batch run test                                                                                                                |
-| Existing pipeline regression check | Old `.txt`-only path still works unmodified | Run the pre-upgrade pipeline path end-to-end, confirm output unchanged                                                        |
+## 10. Environment / Dependencies
+Unchanged from v3.
 
 ---
 
-## 9. Environment / Dependencies to Add
+## 11. Suggested Build Order
 
-```
-google-genai
-langgraph
-langchain
-chromadb
-sentence-transformers
-faster-whisper
-jiwer
-python-docx
-```
+**Step 0 — Empirical test gate (do this before anything else in this list):** Synthesize a test paragraph with Piper containing a comma, a period, a question mark, an exclamation mark, an ellipsis, and at least one Vietnamese dialogue-dash line. Listen to the output. If pausing already sounds natural and adequate, **do not build Section 7.3 at all** — proceed directly to Step 1 below with the pipeline as described in Sections 6–7.2 only. If pausing is inadequate (too abrupt, no distinction between comma and period, etc.), build Section 7.3 as an additional step inserted between "modify `text_splitter.py`" and "modify `audio_postprocess.py`" in the numbered list below. Report the test result before proceeding either way.
 
-Pin exact versions after first successful install in the target Cloud Run environment; do not assume version numbers here without testing, as these libraries update frequently.
+1. `config.py` (including `CONFIDENCE_THRESHOLD`, genre→voice table, and now `PAUSE_LONG_TOKEN` + `PAUSE_LONG_DURATION_MS`), device detection, `llm_client.py`.
+2. Piper standalone test (RTF measurement on this machine's CPU).
+3. Set up `data/` directory + upload endpoints (emotion lexicon, glossary seed) — needed before Alpha/Beta can be meaningfully tested.
+4. Agent Alpha — chapters + genre/voice + emotion-flagging + pause-point-flagging. Test standalone on sample text covering all four responsibilities.
+5. Agent Beta (merged) — test all three passes independently on sample chapters: (a) terminology correction alone, (b) expression insertion alone, (c) pause sentinel insertion alone, then (d) all three together on one realistic chapter.
+6. Modify `text_splitter.py` for sentinel-based forced boundaries (Section 7.2) — test with a synthetic chapter containing a deliberately-placed sentinel mid-chunk.
+7. Modify `audio_postprocess.py` for per-boundary variable silence duration (Section 7.2) — test that a pause-flagged boundary is audibly longer than an ordinary one.
+8. Subtitle timing algorithm (Section 7.1) — as before.
+9. FastAPI backend, wired end-to-end: Alpha → Beta → normalizer → (sentinel-aware) splitter → Piper → (variable-silence) postprocess → subtitle → video.
+10. Segment re-render endpoint.
+11. Agent Gamma (QA) + toggle.
+12. Next.js frontend.
+13. Settings screen + BYOK flow.
+14. Local end-to-end test, including at least one sample with a genuine pause point and one with a genuine emotion segment, confirmed audible on playback.
+15. VPS deployment.
 
 ---
 
-## 10. Suggested Build Order (maps to the team's 4-week plan)
+## 12. Deployment Workflow
+Unchanged from v3 — local-first, then VPS + purchased domain, Docker Compose (FastAPI + Next.js + nginx + certbot).
 
-1. `agents/state.py`, `config.py`, `llm_client.py` — scaffolding, verify a single Gemini call works end-to-end.
-2. `.docx` support in `auto_tts.py` (Section 4) — small, isolated, do first to unblock test data creation.
-3. Agent Alpha — standalone, testable on raw text files with and without `Chương N` headings.
-4. `glossary/schema.py`, `glossary/store.py` — ChromaDB setup, seed with a handful of manually-entered terms for testing.
-5. Agent Beta — standalone, test with a term appearing in chapter 1 and chapter 5, confirm identical `canonical_form`.
-6. Agent Gamma — standalone, test the JSON output maps correctly to whatever input format VieNeu-TTS's multi-speaker/emotion API actually expects (verify this against VieNeu-TTS's real interface before assuming the mapping is trivial).
-7. Agent Delta — standalone, test WER calculation against a known-good and a deliberately corrupted audio sample to sanity-check the metric.
-8. Wire everything via `graph.py`, run on 3–5 full test chapters end-to-end.
-9. Run the full KPI evaluation (Section 8) on the complete test set, iterate on prompts based on failures.
-10. Confirm the old `.txt`-only, no-Agent pipeline path still runs unmodified as a regression check before final submission.
+---
 
-```markdown
-## 11. Deployment Workflow
+## 13. Open Decisions Needing Team Confirmation
 
-**Important distinction:** Google AI Studio is _not_ the runtime environment for this application. It is only used once, up front, to obtain a Gemini API key. The actual application (Gradio UI + LangGraph agents + FFmpeg pipeline) is containerized and deployed directly to **Cloud Run**, which is the real hosting target.
-
-### 11.1 High-Level Flow
-```
-
-Local development (this repo)
-│
-▼
-Obtain Gemini API key from Google AI Studio (one-time setup)
-│
-▼
-Write/maintain Dockerfile (custom — see 11.2, do not rely on buildpack auto-detect)
-│
-▼
-Build container → push to Google Artifact Registry
-│
-▼
-Deploy container to Cloud Run
-│
-▼
-Cloud Run issues a public HTTPS URL (\*.run.app) — this is the demo/staging environment
-
-````
-
-### 11.2 Dockerfile Requirement — Custom, Not Auto-Buildpack
-
-Cloud Run can auto-build from source (`gcloud run deploy --source .`) for pure-Python apps, but this project has **non-Python system dependencies** — FFmpeg (used by `audio_postprocess.py` and `video_renderer.py`) and the faster-whisper model files (used by Agent Delta). A hand-written Dockerfile is required to guarantee these are present in the container:
-
-```dockerfile
-FROM python:3.11-slim
-
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-ENV PORT=8080
-EXPOSE 8080
-
-CMD ["python", "auto_tts.py"]
-````
-
-Verify the exact CMD/entrypoint against how `auto_tts.py` actually launches the Gradio server (host/port binding must respect Cloud Run's `$PORT` env var, not a hardcoded port).
-
-### 11.3 Build & Deploy Commands
-
-```bash
-# One-time setup
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com
-gcloud artifacts repositories create voxdirector-repo --repository-format=docker --location=asia-southeast1
-
-# Build and push the container
-gcloud builds submit --tag asia-southeast1-docker.pkg.dev/PROJECT_ID/voxdirector-repo/app
-
-# Deploy to Cloud Run
-gcloud run deploy voxdirector-ai \
-  --image asia-southeast1-docker.pkg.dev/PROJECT_ID/voxdirector-repo/app \
-  --region asia-southeast1 \
-  --memory 2Gi \
-  --allow-unauthenticated
-```
-
-### 11.4 API Key Handling — Secret Manager, Never Hardcoded
-
-The Gemini API key must never be committed to the repository (this project will be pushed to public GitHub). Store it in Secret Manager and reference it at deploy time:
-
-```bash
-echo -n "YOUR_GEMINI_API_KEY" | gcloud secrets create gemini-api-key --data-file=-
-
-gcloud run deploy voxdirector-ai \
-  --image asia-southeast1-docker.pkg.dev/PROJECT_ID/voxdirector-repo/app \
-  --set-secrets=GEMINI_API_KEY=gemini-api-key:latest
-```
-
-`llm_client.py` should read `os.environ["GEMINI_API_KEY"]` — never a literal string.
-
-### 11.5 Persistent Storage Note
-
-Cloud Run instances are ephemeral by default. Two components need data to survive across container restarts:
-
-- **ChromaDB glossary** (Agent Beta): for this project's scale, the simplest reliable approach is to build the glossary file locally during development/testing and bundle the resulting `.chroma` directory into the Docker image at build time, rather than relying on runtime writes persisting. If live updates to the glossary must persist across deployments, mount a Cloud Storage bucket via Cloud Run's GCS volume mount support instead.
-- **faster-whisper model weights**: bundle the chosen model size into the Docker image at build time to avoid a slow re-download on every cold start.
-
-### 11.6 Deploy Early, Not Once at the End
-
-Do not wait until all 4 Agents are complete to attempt the first deployment. Deploy a minimal "skeleton" version to Cloud Run in Week 1 — an app that starts up, serves the Gradio UI, and successfully makes one Gemini API call — to validate the container, FFmpeg installation, and Secret Manager wiring early. Redeploy incrementally as each Agent is completed, so environment-specific failures (missing system packages, port binding, memory limits) surface while there is still time to fix them, rather than all at once near the submission deadline.
-
-### 11.7 Custom Domain + PWA — Minimal Cloud Run Instance (Proof of Deployability)
-
-**Purpose of this instance:** This deployment exists to demonstrate the project _can_ run on a custom domain as an installable PWA — it is not the primary demo environment. The primary demo runs locally (Section 11.6-alt, local-first) to leverage GPU speed and avoid cold-start/latency issues inherent to Cloud Run for this workload.
-
-**Step 1 — Enable PWA in the existing Gradio app**
-
-In `auto_tts.py`, change the launch call:
-
-```python
-demo.launch(pwa=True, favicon_path="./assets/voxdirector_icon.png")
-```
-
-This is the only code change required — Gradio generates the PWA manifest automatically. No manual service worker or manifest.json needed.
-
-**Step 2 — Purchase a domain** (any registrar — Namecheap, Google Domains successor, PA Vietnam, etc.)
-
-**Step 3 — Map the domain to the Cloud Run service**
-
-```bash
-gcloud beta run domain-mappings create \
-  --service=voxdirector-ai \
-  --domain=yourdomain.com \
-  --region=asia-southeast1
-```
-
-This command outputs DNS records (CNAME or A/AAAA) — add them at the domain registrar's DNS settings. Propagation typically takes a few minutes to a few hours.
-
-**Step 4 — Keep this instance minimal-cost**
-
-This Cloud Run instance is only meant to prove deployability, not to serve the live demo:
-
-- Do **not** set `--min-instances=1` permanently (avoid idle cost) — let it scale to zero by default.
-- Only bump `--min-instances=1` briefly around the moment you want to show it live to Mentor/Giảng viên (e.g. the day before submission), then scale back to zero afterward.
-- Accept that this instance may be slower (cold start) — that is expected and acceptable, since it is a deployability proof, not the performance-critical demo.
-
-**Primary demo environment:** Local machine with GPU, running the full pipeline directly — this is what actually gets demonstrated live for quality/speed. The Cloud Run + custom domain + PWA setup is shown separately as evidence of production deployability.
-
-```
-
-```
+0. **Section 7.3 is entirely conditional on the Step 0 test result (Section 11).** Claude Code should not write any punctuation-pause code until the team reports back that the test showed it's needed.
+1. **`PAUSE_LONG_DURATION_MS` starting value** — proposed 1200–1500ms vs. an ordinary ~300–500ms default; needs empirical tuning once the team listens to real output.
+2. **Whether `text_normalizer.py` passes the sentinel token through safely** (Section 7.2) — flagged as needing verification against actual source; if it doesn't, the fallback (strip-and-carry-as-metadata) needs to be built instead of inline pass-through.
+3. Carried over from v3, still unresolved: emotion word placement heuristic refinement, word-selection strategy for multi-candidate lexicon entries, real genre labels + Piper voice IDs, default fallback background image, BYOK key storage confirmation.

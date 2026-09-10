@@ -161,9 +161,15 @@ lmdeploy = [
 # phải bản build riêng của pnnbao97 nữa) — đã kiểm chứng THẬT trên máy CPU
 # này: cài thành công, load đúng model GGUF hiện có, chạy infer() ra RTF
 # ~0.68 (tương đương bản 0.3.16 cũ, RTF ~0.77), API Llama.from_pretrained()
-# với các kwarg pipeline/auto_tts.py đang dùng (n_gpu_layers, flash_attn,
-# repetitive_penalty, mlock, n_ctx) không lỗi. Cả 3 nguồn (win32, darwin,
-# pypi) đều xác nhận CÓ bản 0.3.19 trước khi ghim.
+# với các kwarg src/vieneu/standard.py._load_backbone() đang dùng
+# (n_gpu_layers, flash_attn, repetitive_penalty, mlock, n_ctx) không lỗi.
+# Cả 3 nguồn (win32, darwin, pypi) đều xác nhận CÓ bản 0.3.19 trước khi ghim.
+#
+# LƯU Ý (v5, 2026-09-10): VoxDirector AI (voxdirector/, pipeline/) đã chuyển
+# hẳn sang Piper cho TTS — xem VoxDirectorAI_Technical_Spec.md Section 5.
+# llama-cpp-python/vieneu KHÔNG còn được VoxDirector dùng nữa, nhưng vẫn giữ
+# nguyên ở đây vì repo này cũng chính là source của gói SDK `vieneu` (PyPI),
+# 1 sản phẩm độc lập không phụ thuộc vào lựa chọn TTS engine của VoxDirector.
 llama-cpp-python = [
     { url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.19/llama_cpp_python-0.3.19-cp312-cp312-win_amd64.whl", marker = "sys_platform == 'win32' and python_version == '3.12'" },
     { index = "llama-cpp-metal", marker = "sys_platform == 'darwin'" },

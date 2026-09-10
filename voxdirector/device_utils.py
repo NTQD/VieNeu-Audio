@@ -1,36 +1,22 @@
 """Phát hiện thiết bị (CPU/GPU) dùng CHUNG cho toàn bộ dự án — 1 nguồn sự
-thật duy nhất, không hardcode "cpu"/"cuda" rải rác ở nhiều nơi (VieNeu-TTS
-trong pipeline/auto_tts.py, faster-whisper của Agent Delta trong
-voxdirector/config.py).
+thật duy nhất, không hardcode "cpu"/"cuda" rải rác ở nhiều nơi (Piper TTS,
+faster-whisper của Agent Gamma trong voxdirector/config.py).
 
-Phải hoạt động đúng CẢ HAI trường hợp:
-- Đường dẫn mặc định hiện tại của dự án trên máy CPU này: torch-free hoàn
-  toàn (backbone GGUF qua llama-cpp-python + codec ONNX qua onnxruntime — xem
-  quyết định 2026-09-08 trong pipeline_requirements.txt).
-- Máy khác có cài torch (vd. nếu sau này quay lại dùng codec torch-based, hoặc
-  máy demo GPU cài đặt khác đi).
+Giữ nguyên từ v3/VieNeu-TTS (Section 5.2 của spec: "Device Detection —
+unchanged") — cơ chế phát hiện thiết bị không phụ thuộc vào TTS engine cụ
+thể đang dùng.
 
 GIỚI HẠN QUAN TRỌNG — đọc trước khi tin tưởng tuyệt đối vào detect_device():
 - torch.cuda.is_available(): chính xác nhất, nhưng chỉ dùng được nếu torch
-  được cài — đường dẫn mặc định hiện tại của pipeline KHÔNG cài torch, nên
-  kênh này thường sẽ không khả dụng (không phải nghĩa là không có GPU).
+  được cài.
 - onnxruntime CUDAExecutionProvider: chỉ có ý nghĩa nếu đang cài
-  "onnxruntime-gpu" — dự án hiện dùng "onnxruntime" bản CPU-only thường, nên
-  kênh này sẽ luôn báo "không có CUDA" cho tới khi nào đổi sang
-  onnxruntime-gpu, kể cả khi máy có GPU NVIDIA thật.
-- llama-cpp-python (backbone GGUF của VieNeu-TTS): KHÔNG có API runtime nào
-  để hỏi "bản đang cài có hỗ trợ GPU không" — điều đó do BẢN WHEEL đã cài
-  quyết định (build có CUDA hay không), không phải 1 cờ có thể bật lúc chạy.
-  standard.py._load_backbone() luôn truyền n_gpu_layers=-1 (yêu cầu offload
-  tối đa) bất kể detect_device() trả về gì — nếu wheel llama-cpp-python
-  không có CUDA, nó tự lặng lẽ chạy CPU dù được yêu cầu offload. Trên máy
-  demo GPU thật: PHẢI cài llama-cpp-python bản có CUDA (build riêng, không
-  phải bản mặc định từ PyPI) thì backbone mới thực sự chạy trên GPU — hàm
-  dưới đây không thể tự kiểm tra hay đảm bảo điều đó.
+  "onnxruntime-gpu" — nếu chỉ cài "onnxruntime" bản CPU-only thường, kênh
+  này sẽ luôn báo "không có CUDA" kể cả khi máy có GPU NVIDIA thật.
 
 Nói cách khác: detect_device() trả lời đúng câu hỏi "máy này CÓ vẻ có GPU khả
 dụng qua framework đang cài không" để quyết định truyền device="cuda"/"cpu"
-cho các lời gọi API — nó KHÔNG đảm bảo backbone GGUF sẽ thực sự dùng GPU đó.
+cho các lời gọi API — nó KHÔNG đảm bảo bản thân engine TTS/ASR thực sự dùng
+GPU đó (còn phụ thuộc bản wheel cụ thể đã cài có hỗ trợ CUDA hay không).
 """
 
 import logging

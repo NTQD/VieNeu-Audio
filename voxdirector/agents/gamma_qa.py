@@ -1,8 +1,12 @@
-"""Agent Delta — QA Agent (ASR round-trip).
+"""Agent Gamma — QA Agent (ASR round-trip).
+
+Đổi tên từ "Delta" (v3) sang "Gamma" (v5, agent thứ 3 trong chuỗi 3 Agent
+sau khi Beta cũ + Gamma cũ gộp lại thành 1 Beta duy nhất — xem Section 0/6.3
+của spec). Vai trò, schema, prompt giữ NGUYÊN như "Delta" cũ, chỉ đổi tên.
 
 word_error_rate/deviation_score luôn tính bằng CODE THUẦN (faster-whisper +
 jiwer) — KHÔNG bao giờ để LLM tự ước lượng số liệu này (đúng nguyên tắc
-chống hallucination của Delta: "chỉ báo cáo dựa trên sai khác đo được").
+chống hallucination của Gamma: "chỉ báo cáo dựa trên sai khác đo được").
 LLM (Gemini, qua summarize_qa_report — tuỳ chọn, cần GEMINI_API_KEY) chỉ
 dùng để tóm tắt các con số ĐÃ tính sẵn thành 1 đoạn báo cáo ngắn dễ đọc.
 """
@@ -17,7 +21,7 @@ from voxdirector.config import (
 )
 
 SYSTEM_PROMPT = """\
-Bạn là Delta, kiểm toán viên chất lượng âm thanh tỉ mỉ, làm việc theo phương
+Bạn là Gamma, kiểm toán viên chất lượng âm thanh tỉ mỉ, làm việc theo phương
 pháp luận rõ ràng và khách quan tuyệt đối. Bạn không đưa ra nhận định cảm
 tính, chỉ trình bày sự thật dựa trên số liệu đo lường được, để con người là
 người ra quyết định cuối cùng.

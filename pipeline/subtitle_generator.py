@@ -85,11 +85,10 @@ def generate_srt(chapter_dir, text_file=None, silence=0.5, max_chars=60):
     """Tạo SRT từ text gốc + duration .wav.
 
     text_file luôn là text của ĐÚNG 1 chương — Agent Alpha (xem
-    voxdirector/agents/alpha_ingestion.py) đã phân tách chương ở tầng
-    auto_tts.py trước khi lưu file này, nên KHÔNG cần tự tách lại "Chương N"
-    bằng regex ở đây nữa (trước đây có 1 bản regex-split trùng lặp y hệt
-    auto_tts.py, dễ lệch nếu 1 trong 2 chỗ đổi logic mà chỗ kia không đổi
-    theo)."""
+    voxdirector/agents/alpha_ingestion.py) đã phân tách chương ở tầng backend
+    trước khi lưu file này, nên KHÔNG cần tự tách lại "Chương N" bằng regex ở
+    đây nữa (trước đây có 1 bản regex-split trùng lặp y hệt logic tách
+    chương, dễ lệch nếu 1 trong 2 chỗ đổi logic mà chỗ kia không đổi theo)."""
     wav_files = get_wav_files(chapter_dir)
     if not wav_files: return None
 
