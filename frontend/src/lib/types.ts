@@ -57,6 +57,17 @@ export interface NewTermCandidate {
   confidence_score: number;
 }
 
+// Khop CHINH XAC voxdirector.glossary.schema.GlossaryEntry (backend) - dung
+// cho GlossaryEditor.tsx (Cai dat du lieu > Glossary khoi tao). entity_type
+// gioi han 3 gia tri qua Literal o backend, khong phai chuoi tu do.
+export interface GlossaryEntry {
+  original_term: string;
+  entity_type: "character" | "place" | "term";
+  canonical_form: string;
+  pronunciation_note: string | null;
+  first_seen_chapter?: number | null;
+}
+
 export interface QualitySummary {
   word_error_rate: number;
   passed: boolean;

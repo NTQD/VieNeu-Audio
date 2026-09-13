@@ -122,15 +122,34 @@ qua từng khe đá, như thể đang chờ đợi một điều gì đó sắp 
 
 ## 9. Settings screen ("Cài đặt dữ liệu")
 
+2026-09-13: raw JSON-in-a-textarea replaced with dedicated visual editors
+per section (`EmotionLexiconEditor.tsx`, `GlossaryEditor.tsx`,
+`PunctuationPauseEditor.tsx`) — see `frontend/src/components/SettingsPanel.tsx`
+for the shared load/save chrome. `_placeholder`/`_note` metadata keys are
+preserved on save even though they're not shown in the editors.
+
 For each of the three sections (Từ điển cảm xúc / Glossary khởi tạo / Bảng
 ngắt nghỉ theo dấu câu):
 
-- [ ] "Tải để sửa" loads current file content into a textarea as JSON.
+- [ ] "Tải để sửa" loads current file content into the structured editor
+      (chip list / entry cards / slider rows, depending on section).
 - [ ] Edit a value, click "Lưu" — success (no error shown).
 - [ ] Reload the page, re-open settings, "Tải để sửa" again — edit
       persisted (confirms it actually wrote to disk, not just in-memory).
-- [ ] Save deliberately-broken JSON — confirm you get an error message
-      instead of a silent failure or a corrupted file on disk.
+- [ ] Reload the page, re-open settings, "Tải để sửa" again — confirm the
+      file's `_placeholder`/`_note` keys are still present in the saved
+      file (open it on disk, not just in the UI) after a save.
+- [ ] Từ điển cảm xúc: add a tag to an existing label, remove a tag, add a
+      brand-new label, remove a label — each updates the chip list
+      immediately. Saving with an empty new-label input does nothing (no
+      blank label added).
+- [ ] Glossary khởi tạo: add an entry, leave "Tên gốc"/"Tên chuẩn hoá"
+      blank — inline warning appears and stays until filled in. Entity
+      type dropdown only offers Nhân vật / Địa danh / Thuật ngữ (matches
+      backend's `Literal["character","place","term"]`).
+- [ ] Bảng ngắt nghỉ: dragging a slider and editing its number field stay
+      in sync (both reflect the same value); add a new punctuation/token
+      row, remove one.
 - [ ] Emotion lexicon: add a brand-new label, save, then run a fresh Alpha
       submission — confirm the new label is a legal option Alpha can now
       choose (indirect check: the dynamic `Literal` type is rebuilt from

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   Dialog,
   DialogContent,
@@ -12,29 +12,47 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { cn } from "cn";
 import { fetchSettingsFile, getStoredApiKey, setStoredApiKey, uploadSettingsFile } from "@/lib/api";
+import EmotionLexiconEditor from "@/components/EmotionLexiconEditor";
+import GlossaryEditor from "@/components/GlossaryEditor";
+import PunctuationPauseEditor from "@/components/PunctuationPauseEditor";
+import type { GlossaryEntry } from "@/lib/types";
 
 type SettingsKey = "emotion-lexicon" | "glossary-seed" | "punctuation-pauses";
 
-const SECTIONS: { key: SettingsKey; label: string; hint: string }[] = [
-  {
-    key: "emotion-lexicon",
-    label: "Từ điển cảm xúc",
-    hint: "emotion_label -> danh sách từ ứng viên. Alpha dùng tập nhãn (key) để gắn cờ, Beta chọn 1 từ trong danh sách khi chèn.",
-  },
-  {
-    key: "glossary-seed",
-    label: "Glossary khởi tạo",
-    hint: "Danh sách entry ban đầu cho Character/Terminology Glossary (nạp vào ChromaDB khi pipeline khởi động).",
-  },
-  {
-    key: "punctuation-pauses",
-    label: "Bảng ngắt nghỉ theo dấu câu",
-    hint: "dấu câu -> độ dài khoảng lặng (ms). Dùng cho ngắt nghỉ ngắn bên trong 1 đoạn (Section 7.3).",
-  },
-];
+// Ca 3 file du lieu deu mang theo metadata "_placeholder"/"_note" (xem
+// data/*.json) - khong hien thi cho nguoi dung sua nhung PHAI giu nguyen khi
+// luu lai, khong thi mat ghi chu goc cua team.
+function isMetaKey(key: string) {
+  return key.startsWith("_");
+}
 
-function SettingsSection({ section }: { section: (typeof SECTIONS)[number] }) {
-  const [text, setText] = useState<string | null>(null);
+function metaOf(raw: Record<string, unknown>) {
+  return Object.fromEntries(Object.entries(raw).filter(([k]) => isMetaKey(k)));
+}
+
+// Chrome chung (tai/luu/dong/trang thai loi) cho ca 3 khoi cai dat - moi khoi
+// chi khac nhau o kieu du lieu T va giao dien sua T (children render-prop),
+// thay vi lap lai textarea + JSON.parse/stringify nhu truoc (khong than thien
+// nguoi dung khong ranh JSON).
+function SettingsSectionShell<T>({
+  label,
+  hint,
+  settingsKey,
+  toContent,
+  toRaw,
+  validate,
+  children,
+}: {
+  label: string;
+  hint: string;
+  settingsKey: SettingsKey;
+  toContent: (raw: Record<string, unknown>) => T;
+  toRaw: (content: T, raw: Record<string, unknown>) => Record<string, unknown>;
+  validate?: (content: T) => string | null;
+  children: (content: T, setContent: (next: T) => void) => ReactNode;
+}) {
+  const [raw, setRaw] = useState<Record<string, unknown> | null>(null);
+  const [content, setContent] = useState<T | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "saving" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
 
@@ -42,8 +60,9 @@ function SettingsSection({ section }: { section: (typeof SECTIONS)[number] }) {
     setStatus("loading");
     setError(null);
     try {
-      const data = await fetchSettingsFile(section.key);
-      setText(JSON.stringify(data, null, 2));
+      const data = await fetchSettingsFile(settingsKey);
+      setRaw(data);
+      setContent(toContent(data));
       setStatus("idle");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Tải thất bại");
@@ -52,44 +71,52 @@ function SettingsSection({ section }: { section: (typeof SECTIONS)[number] }) {
   }
 
   async function save() {
-    if (text === null) return;
+    if (content === null) return;
+    const validationError = validate?.(content) ?? null;
+    if (validationError) {
+      setError(validationError);
+      setStatus("error");
+      return;
+    }
     setStatus("saving");
     setError(null);
     try {
-      const parsed = JSON.parse(text);
-      await uploadSettingsFile(section.key, parsed);
+      await uploadSettingsFile(settingsKey, toRaw(content, raw ?? {}));
       setStatus("idle");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "JSON không hợp lệ hoặc lưu thất bại");
+      setError(err instanceof Error ? err.message : "Lưu thất bại");
       setStatus("error");
     }
+  }
+
+  function close() {
+    setRaw(null);
+    setContent(null);
+    setStatus("idle");
+    setError(null);
   }
 
   return (
     <div className="space-y-2 border-t pt-4 first:border-t-0 first:pt-0">
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-sm font-medium">{section.label}</p>
-          <p className="text-xs text-muted-foreground">{section.hint}</p>
+          <p className="text-sm font-medium">{label}</p>
+          <p className="text-xs text-muted-foreground">{hint}</p>
         </div>
-        {text === null && (
+        {content === null && (
           <Button size="sm" variant="outline" onClick={load} disabled={status === "loading"}>
             {status === "loading" ? "Đang tải..." : "Tải để sửa"}
           </Button>
         )}
       </div>
-      {text !== null && (
-        <div className="space-y-2">
-          <textarea
-            className="w-full h-40 rounded-md border bg-background p-2 font-mono text-xs"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-          />
+      {content !== null && (
+        <div className="space-y-3">
+          {children(content, setContent)}
           <div className="flex items-center gap-2">
             <Button size="sm" onClick={save} disabled={status === "saving"}>
-              {status === "saving" ? "Đang lưu..." : "Lưu (ghi đè toàn bộ file)"}
+              {status === "saving" ? "Đang lưu..." : "Lưu"}
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setText(null)}>
+            <Button size="sm" variant="ghost" onClick={close}>
               Đóng
             </Button>
           </div>
@@ -160,15 +187,62 @@ export default function SettingsPanel() {
       <DialogTrigger className={cn(buttonVariants({ variant: "outline", size: "sm" }))}>
         Cài đặt dữ liệu
       </DialogTrigger>
-      <DialogContent className="max-w-xl max-h-[85vh] overflow-y-auto">
+      <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Cài đặt dữ liệu & API key</DialogTitle>
         </DialogHeader>
 
         <div className="space-y-4">
-          {SECTIONS.map((section) => (
-            <SettingsSection key={section.key} section={section} />
-          ))}
+          <SettingsSectionShell<Record<string, string[]>>
+            label="Từ điển cảm xúc"
+            hint="emotion_label -> danh sách từ ứng viên. Alpha dùng tập nhãn (key) để gắn cờ, Beta chọn 1 từ trong danh sách khi chèn."
+            settingsKey="emotion-lexicon"
+            toContent={(raw) => {
+              const content: Record<string, string[]> = {};
+              for (const [k, v] of Object.entries(raw)) {
+                if (!isMetaKey(k) && Array.isArray(v)) content[k] = v as string[];
+              }
+              return content;
+            }}
+            toRaw={(content, raw) => ({ ...metaOf(raw), ...content })}
+          >
+            {(content, setContent) => (
+              <EmotionLexiconEditor value={content} onChange={setContent} />
+            )}
+          </SettingsSectionShell>
+
+          <SettingsSectionShell<GlossaryEntry[]>
+            label="Glossary khởi tạo"
+            hint="Danh sách entry ban đầu cho Character/Terminology Glossary (nạp vào ChromaDB khi pipeline khởi động)."
+            settingsKey="glossary-seed"
+            toContent={(raw) => (Array.isArray(raw.entries) ? (raw.entries as GlossaryEntry[]) : [])}
+            toRaw={(content, raw) => ({ ...metaOf(raw), entries: content })}
+            validate={(content) =>
+              content.some((e) => !e.original_term.trim() || !e.canonical_form.trim())
+                ? "Có entry còn thiếu Tên gốc hoặc Tên chuẩn hoá."
+                : null
+            }
+          >
+            {(content, setContent) => <GlossaryEditor value={content} onChange={setContent} />}
+          </SettingsSectionShell>
+
+          <SettingsSectionShell<Record<string, number>>
+            label="Bảng ngắt nghỉ theo dấu câu"
+            hint="dấu câu -> độ dài khoảng lặng (ms). Dùng cho ngắt nghỉ ngắn bên trong 1 đoạn (Section 7.3)."
+            settingsKey="punctuation-pauses"
+            toContent={(raw) => {
+              const content: Record<string, number> = {};
+              for (const [k, v] of Object.entries(raw)) {
+                if (!isMetaKey(k) && typeof v === "number") content[k] = v;
+              }
+              return content;
+            }}
+            toRaw={(content, raw) => ({ ...metaOf(raw), ...content })}
+          >
+            {(content, setContent) => (
+              <PunctuationPauseEditor value={content} onChange={setContent} />
+            )}
+          </SettingsSectionShell>
 
           <ByokSection />
         </div>
