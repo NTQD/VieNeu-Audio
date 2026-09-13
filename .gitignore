@@ -38,4 +38,5 @@ frontend/.next/
 backend/.venv/
 backend/app/_jobs/
 voxdirector/.chroma/
+voxdirector/.data/
 scratch_check/out/

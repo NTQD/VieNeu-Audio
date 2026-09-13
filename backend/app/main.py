@@ -104,6 +104,21 @@ def _seed_glossary_if_empty():
               f"pipeline van chay binh thuong, glossary se trong cho den khi nap thu cong.")
 
 
+@app.on_event("startup")
+def _init_job_db():
+    """Phase 1 cua ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md - tao schema
+    SQLite job/trace log (voxdirector/db.py) som luc khoi dong, cung mo hinh
+    voi _seed_glossary_if_empty() o tren - loi (vd. dia chi doc) khong duoc
+    chan uvicorn khoi dong, chi mat kha nang ghi trace."""
+    from voxdirector.db import _get_conn
+
+    try:
+        _get_conn()
+    except Exception as e:
+        print(f"[VoxDirector] Canh bao: khong khoi tao duoc job trace DB ({e}) - "
+              f"pipeline van chay binh thuong, chi khong co lich su job.")
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -241,6 +256,11 @@ def submit(req: SubmitRequest):
         # 2026-09-13 - thoi gian THAT cua Alpha (goi Gemini, neu bat) - dung
         # trong timing_breakdown cua ket qua cuoi, xem ws_progress().
         "alpha_duration_s": round(time.monotonic() - _alpha_start, 1),
+        # Phase 1 - can luu lai de ghi vao job trace log (voxdirector/db.py)
+        # luc ws_progress() ket thuc; khong the doc lai tu dau vi request POST
+        # /api/submit da xong tu lau, chi con query param cua WS biet
+        # beta_enabled/qa_enabled.
+        "alpha_enabled": req.alpha_enabled,
     }
 
     return SubmitResponse(
@@ -435,6 +455,28 @@ async def ws_progress(websocket: WebSocket, job_id: str):
             )
             chapter_results.append(result)
 
+            # Phase 1 - ghi trace chuong nay ngay (khong doi ca job xong) de
+            # 1 chuong loi giua chung van con lai duoc chi so cua cac chuong
+            # da xong truoc do trong DB. Loi ghi trace tu boc rieng trong
+            # record_chapter(), khong the lam gian doan vong lap nay.
+            from voxdirector.db import record_chapter
+
+            record_chapter(
+                job_id=job_id,
+                chapter_number=ci + 1,
+                alpha_confidence_score=chapter.get("confidence_score"),
+                needs_review=chapter.get("needs_review", False),
+                emotion_flagged_count=len(chapter_emotions),
+                pause_points_count=len(chapter_pauses),
+                applied_terms_count=len(result["applied_terms"]),
+                new_entry_candidates_count=len(result["new_entry_candidates"]),
+                expression_report=result["expression_report"],
+                pause_report=result["pause_report"],
+                chunk_count=len(result["chunks"]),
+                beta_duration_s=result.get("beta_duration_s", 0.0),
+                tts_duration_s=result.get("tts_duration_s", 0.0),
+            )
+
         # Ghep audio cac chuong thanh 1 file duy nhat cho ca job (khoang lang
         # 1.0s co dinh giua chuong - khong phai gia tri chot trong spec, chi
         # la lua chon hop ly cho pham vi test noi bo nay). Dung chung ham voi
@@ -516,11 +558,23 @@ async def ws_progress(websocket: WebSocket, job_id: str):
             from voxdirector.agents.gamma_qa import summarize_qa_report
             qa_report["summary"] = summarize_qa_report(qa_report)
 
+        # Dedup theo term (khong phai extend tho) - xac nhan co THAT qua test
+        # song 2026-09-13: cung 1 nhan vat duoc Beta flag lai o NHIEU chuong
+        # (vd. "Lý Thiên Vũ" xuat hien ca chuong 1 lan chuong 2) tao 2 candidate
+        # trung term o all_new_terms, khien React key={c.term} trong
+        # NewTermConfirmationPanel dam vao nhau - nut "Duyệt" bao "Đang lưu..."
+        # ket dinh du approve_new_entries() da chay dung o server (xac nhan qua
+        # ChromaDB). Giu candidate XUAT HIEN DAU TIEN cho moi term la du -
+        # nguoi dung chi can duyet 1 lan cho 1 ten rieng.
         all_new_terms = []
+        seen_new_terms = set()
         all_expression_report = []
         all_pause_report = []
         for r in chapter_results:
-            all_new_terms.extend(r["new_entry_candidates"])
+            for candidate in r["new_entry_candidates"]:
+                if candidate["term"] not in seen_new_terms:
+                    seen_new_terms.add(candidate["term"])
+                    all_new_terms.append(candidate)
             all_expression_report.extend(r["expression_report"])
             all_pause_report.extend(r["pause_report"])
 
@@ -555,6 +609,8 @@ async def ws_progress(websocket: WebSocket, job_id: str):
             "qa_s": round(qa_duration_s, 1),
         }
 
+        processing_time_s = round(job.get("alpha_duration_s", 0.0) + (time.monotonic() - processing_started_at), 1)
+
         await websocket.send_json({
             "type": "result",
             "audio_url": f"/api/audio/{job_id}",
@@ -565,12 +621,46 @@ async def ws_progress(websocket: WebSocket, job_id: str):
             "new_term_candidates": all_new_terms,
             "expression_report": all_expression_report,
             "pause_report": all_pause_report,
-            "processing_time_s": round(job.get("alpha_duration_s", 0.0) + (time.monotonic() - processing_started_at), 1),
+            "processing_time_s": processing_time_s,
             "timing_breakdown": timing_breakdown,
         })
+
+        from voxdirector.db import record_job
+
+        record_job(
+            job_id=job_id,
+            status="completed",
+            num_chapters=len(alpha_result["chapters"]),
+            detected_genre=alpha_result.get("detected_genre"),
+            genre_confidence_score=alpha_result.get("genre_confidence_score"),
+            chapters_needing_review=sum(1 for c in alpha_result["chapters"] if c.get("needs_review")),
+            alpha_enabled=job.get("alpha_enabled", True),
+            beta_enabled=beta_enabled,
+            qa_enabled=qa_enabled,
+            voice_id=voice_id,
+            timing_breakdown=timing_breakdown,
+            processing_time_s=processing_time_s,
+            word_error_rate=(qa_report or {}).get("word_error_rate"),
+            qa_passed=(qa_report or {}).get("passed") if qa_report else None,
+            flagged_segments_count=(qa_report or {}).get("flagged_segments_count"),
+            new_term_candidates_count=len(all_new_terms),
+        )
     except WebSocketDisconnect:
         pass
     except Exception as e:
+        from voxdirector.db import record_job
+
+        alpha_result_for_trace = job.get("alpha_result")
+        record_job(
+            job_id=job_id,
+            status="error",
+            error_message=str(e),
+            num_chapters=len(alpha_result_for_trace["chapters"]) if alpha_result_for_trace else None,
+            alpha_enabled=job.get("alpha_enabled", True),
+            beta_enabled=beta_enabled,
+            qa_enabled=qa_enabled,
+            voice_id=voice_id,
+        )
         await websocket.send_json({"type": "error", "message": str(e)})
 
 

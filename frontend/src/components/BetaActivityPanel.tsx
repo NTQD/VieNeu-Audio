@@ -24,7 +24,7 @@ export default function BetaActivityPanel({ expressionReport, pauseReport }: Pro
         {expressionReport.map((item, i) => (
           <li key={`expr-${i}`}>
             {item.matched
-              ? `chèn biểu cảm [${item.emotion_label}]: "${item.inserted_word}"`
+              ? `chèn biểu cảm [${item.emotion_label}]: "${item.inserted_word || "(không rõ từ đã chèn)"}"`
               : `bỏ qua biểu cảm [${item.emotion_label}]: ${item.skipped_reason ?? "không rõ lý do"}`}
           </li>
         ))}

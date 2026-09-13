@@ -29,6 +29,10 @@ services:
     volumes:
       - voxdirector_chroma:/app/voxdirector/.chroma
       - voxdirector_jobs:/app/backend/app/_jobs
+      # Phase 1 cua ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md - SQLite
+      # job/trace log (voxdirector/db.py), cung mo hinh volume voi
+      # voxdirector_chroma o tren.
+      - voxdirector_db:/app/voxdirector/.data
     expose:
       - "8000"
     restart: unless-stopped
@@ -75,5 +79,6 @@ services:
 volumes:
   voxdirector_chroma:
   voxdirector_jobs:
+  voxdirector_db:
   certbot_www:
   certbot_conf:

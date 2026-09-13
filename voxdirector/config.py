@@ -103,6 +103,17 @@ VOICE_PRESETS_PATH = os.path.join(DATA_DIR, "voice_presets.json")
 EMOTION_LEXICON_PATH = os.path.join(DATA_DIR, "emotion_lexicon.json")
 GLOSSARY_SEED_PATH = os.path.join(DATA_DIR, "glossary_seed.json")
 
+# Phase 1 cua ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md ("Persistence &
+# measurement"): SQLite job/trace log - ghi chi so (khong phai audio/text day
+# du) tung agent moi job, song sot qua restart backend. Cung 1 mo hinh voi
+# CHROMA_PERSIST_DIR o tren (thu muc rieng trong voxdirector/, co the gan
+# volume Docker rieng, khong dung chung ha tang moi/them dependency ngoai
+# sqlite3 co san trong Python).
+DB_PATH = os.environ.get(
+    "VOXDIRECTOR_DB_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), ".data", "voxdirector.db"),
+)
+
 _cached_voice_presets = None
 _cached_emotion_lexicon = None
 
