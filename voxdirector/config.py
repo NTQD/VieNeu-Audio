@@ -1,5 +1,7 @@
-"""Cấu hình dùng chung cho toàn bộ VoxDirector AI (4 Agent)."""
+"""Cấu hình dùng chung cho toàn bộ VoxDirector AI (v5: 3 Agent — Alpha, Beta
+(gộp terminology + expression + pause sentinel), Gamma (QA))."""
 
+import json
 import os
 
 # Ngưỡng tin cậy tối thiểu để 1 quyết định của Agent được coi là chắc chắn.
@@ -21,6 +23,23 @@ GEMINI_MODEL = os.environ.get("VOXDIRECTOR_GEMINI_MODEL", "gemini-3.6-flash")
 
 # API key đọc từ biến môi trường — KHÔNG hardcode key trong code.
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+
+# NGUYEN NHAN CUA LOI "chi doc duoc ~80% noi dung roi dung hoan toan" (bao
+# cao 2026-09-12, xac nhan qua doc code voxdirector/llm_client.py): TRUOC
+# ban sua nay, GenerateContentConfig KHONG dat max_output_tokens tuong minh,
+# nen SDK dung gia tri mac dinh (thap hon nhieu so voi gioi han that su cua
+# model). Agent Beta (va Agent Alpha khi ca 1 cuon truyen dai khong co
+# heading "Chuong N" ro rang bi gop thanh 1 chuong DUY NHAT) phai "doc lai"
+# GAN NHU TOAN BO van ban goc trong field corrected_text/chapters cua 1 lan
+# goi Gemini DUY NHAT - voi van ban dai, output nay CHAM tran gioi han mac
+# dinh giua chung, khien response bi CAT NGANG. Vi day la JSON mode
+# (response_schema), phan JSON con lai van co the "dep" ve mat cu phap (SDK
+# tu dong dong ngoac) nhung NOI DUNG BI THIEU - khong nem loi, pipeline am
+# tham chay tiep voi du lieu cut, dung y het trieu chung nguoi dung bao cao.
+# Sua: (1) dat max_output_tokens tuong minh o muc CAO (xem llm_client.py),
+# (2) kiem tra finish_reason == MAX_TOKENS va bao loi RO RANG thay vi im
+# lang dung du lieu thieu (xem llm_client.call_structured()).
+GEMINI_MAX_OUTPUT_TOKENS = int(os.environ.get("VOXDIRECTOR_GEMINI_MAX_OUTPUT_TOKENS", "65536"))
 
 # ChromaDB: nơi lưu Character Glossary (persistent, sống sót qua các lần
 # chạy khác nhau).
@@ -46,3 +65,84 @@ from voxdirector.device_utils import detect_device
 WHISPER_DEVICE = os.environ.get("VOXDIRECTOR_WHISPER_DEVICE") or detect_device()
 WHISPER_COMPUTE_TYPE = os.environ.get("VOXDIRECTOR_WHISPER_COMPUTE_TYPE", "int8")
 WER_PASS_THRESHOLD = 0.08
+
+# Sentinel dùng bởi Alpha (đánh dấu điểm cần ngắt kịch tính dài) + Beta (chèn
+# vào text) + text_splitter.py (ép làm ranh giới chunk) + audio_postprocess.py
+# (áp khoảng lặng dài tại đó) — Section 7.2 của spec. Đây LÀ hằng số kỹ thuật
+# cố định trong code, KHÔNG phải dữ liệu do đội ngũ tải lên như
+# data/punctuation_pauses.json (Section 7.3, dấu câu thường, ngắn hơn nhiều)
+# — 2 cơ chế khác nhau, không dùng chung 1 nguồn cấu hình. Định nghĩa 1 nơi
+# duy nhất để text_splitter.py và audio_postprocess.py khớp đúng cùng 1
+# chuỗi, tránh lệch nhau nếu sửa ở 1 nơi mà quên nơi kia.
+PAUSE_LONG_TOKEN = "[[PAUSE_LONG]]"
+
+# GIÁ TRỊ TẠM THỜI, CHƯA CHỐT — Section 13 (Open Decisions) của spec: đề
+# xuất 1200-1500ms (so với ~300-500ms mặc định của khoảng lặng thường), cần
+# đội ngũ nghe thật rồi tinh chỉnh lại. Lấy giá trị giữa khoảng đề xuất làm
+# điểm khởi đầu, không phải con số đã được xác nhận qua nghe thật.
+PAUSE_LONG_DURATION_MS = 1400
+
+# TTS engine (2026-09-11: dao nguoc quyet dinh dung Piper, quay lai
+# VieNeu-TTS). GHIM CHINH XAC version, khong dung constraint long (>=) - xac
+# nhan co THAT (2026-09-11): venv CHUNG cua repo nay co san 1 ban `vieneu`
+# EDITABLE INSTALL tro vao src/vieneu/ cua CHINH repo (SDK rieng, kien truc
+# CU, version 2.7.0, API hoan toan khac ban PyPI that su can dung). Neu
+# khong ghim version + kiem tra o backend startup, mot lan cai dat/venv sai
+# se AM THAM dung nham ban local cu thay vi ban PyPI dung README - day CHINH
+# LA loi da xay ra va duoc phat hien lai o buoc nay. Xem
+# backend/app/main.py (kiem tra version luc startup) va
+# pipeline/vieneu_tts.py (module wiring that).
+EXPECTED_VIENEU_VERSION = "3.6.4"
+
+# Đường dẫn tới các file dữ liệu config-driven (KHÔNG hardcode danh sách
+# giọng/genre trực tiếp trong code Agent hay frontend — xem
+# data/voice_presets.json). Đổi TTS engine sau này chỉ cần sửa file JSON này,
+# không cần sửa code Alpha/frontend.
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+VOICE_PRESETS_PATH = os.path.join(DATA_DIR, "voice_presets.json")
+EMOTION_LEXICON_PATH = os.path.join(DATA_DIR, "emotion_lexicon.json")
+GLOSSARY_SEED_PATH = os.path.join(DATA_DIR, "glossary_seed.json")
+
+_cached_voice_presets = None
+_cached_emotion_lexicon = None
+
+
+def load_voice_presets(path=None):
+    """Nạp danh sách giọng + bảng genre->voice từ data/voice_presets.json
+    (có cache trong tiến trình khi dùng đường dẫn mặc định). Trả về dict với
+    2 key: "voices" (list) và "genre_to_voice" (dict genre -> voice id).
+
+    Voice IDs la giong that cua VieNeu-TTS v3 Turbo (23 preset, xac nhan qua
+    vieneu.list_preset_voices() - xem _note trong file JSON). genre_to_voice
+    la FIRST PASS dua tren "style" (Phong cach) co san cua tung giong -
+    KHONG phai gia tri da chot qua nghe that, can review lai bang tai (xem
+    _note trong file JSON de biet ly do chon)."""
+    global _cached_voice_presets
+    if path is None and _cached_voice_presets is not None:
+        return _cached_voice_presets
+    load_path = path or VOICE_PRESETS_PATH
+    with open(load_path, "r", encoding="utf-8") as f:
+        presets = json.load(f)
+    if path is None:
+        _cached_voice_presets = presets
+    return presets
+
+
+def load_emotion_lexicon(path=None):
+    """Nạp bảng emotion_label -> list các từ biểu cảm ứng viên từ
+    data/emotion_lexicon.json (Section 6.3 cua spec — team-uploaded, KHONG
+    hardcode trong Agent). Alpha dùng tập nhãn (key) để biết nhãn nào được
+    phép gắn cờ; Beta chọn 1 từ trong danh sách của đúng nhãn khi chèn từ
+    biểu cảm — không tự bịa từ ngoài danh sách này.
+
+    Có cache trong tiến trình khi dùng đường dẫn mặc định, giống
+    load_voice_presets()."""
+    global _cached_emotion_lexicon
+    if path is None and _cached_emotion_lexicon is not None:
+        return _cached_emotion_lexicon
+    load_path = path or EMOTION_LEXICON_PATH
+    with open(load_path, "r", encoding="utf-8") as f:
+        lexicon = json.load(f)
+    if path is None:
+        _cached_emotion_lexicon = lexicon
+    return lexicon

@@ -24,3 +24,13 @@ docs/
 *.zip
 .mcp.json
 .claude/
+
+# VoxDirector backend/Dockerfile dung context "." (goc repo) nhung chi COPY
+# chon loc voxdirector/, pipeline/, data/, backend/app/ - loai bo cac thu
+# muc nang khong lien quan de build context khong bi cham nhu .venv/ o tren.
+frontend/node_modules/
+frontend/.next/
+backend/.venv/
+backend/app/_jobs/
+scratch_check/out/
+

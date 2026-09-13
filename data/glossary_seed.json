@@ -1,0 +1,20 @@
+{
+  "_placeholder": true,
+  "_note": "PLACEHOLDER seed — team should replace/extend via POST /api/settings/glossary-seed (Section 6.3 data management of the spec). Each entry matches voxdirector.glossary.schema.GlossaryEntry exactly (original_term, entity_type, canonical_form, pronunciation_note, first_seen_chapter). Loaded into the ChromaDB glossary collection via voxdirector.glossary.store.seed_from_file() before Beta's first real run — an empty/placeholder glossary is a normal starting state (query_glossary() already returns [] safely when the collection is empty), this file just gives the team a working example to edit instead of starting from a blank file.",
+  "entries": [
+    {
+      "original_term": "Lý Phong",
+      "entity_type": "character",
+      "canonical_form": "Lý Phong",
+      "pronunciation_note": null,
+      "first_seen_chapter": 1
+    },
+    {
+      "original_term": "Tiểu Yến",
+      "entity_type": "character",
+      "canonical_form": "Tiểu Yến",
+      "pronunciation_note": null,
+      "first_seen_chapter": 1
+    }
+  ]
+}

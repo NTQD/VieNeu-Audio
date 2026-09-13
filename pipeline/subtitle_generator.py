@@ -13,7 +13,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.append(current_dir)
 
-from text_splitter import split_text_for_tts
+from text_splitter import split_text_for_tts, split_text_with_boundaries
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -81,7 +81,7 @@ def format_ts(seconds):
     ms = int((seconds - int(seconds)) * 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
-def generate_srt(chapter_dir, text_file=None, silence=0.5, max_chars=60):
+def generate_srt(chapter_dir, text_file=None, silence=0.5, boundary_silences=None, max_chars=60):
     """Tạo SRT từ text gốc + duration .wav.
 
     text_file luôn là text của ĐÚNG 1 chương — Agent Alpha (xem
@@ -98,7 +98,18 @@ def generate_srt(chapter_dir, text_file=None, silence=0.5, max_chars=60):
     with open(txt_path, "r", encoding="utf-8") as f:
         full_text = f.read()
 
-    chunks = split_text_for_tts(full_text.strip(), max_words=250)
+    # boundary_silences (list[float], len = len(wav_files)-1): khoang lang
+    # THAT giua tung cap file .wav lien tiep - Section 7.2 cua spec (v5) da
+    # lam khoang lang KHONG con deu nhau nua (pause_long dai hon default).
+    # Neu khong truyen vao, fallback ve "silence" (scalar, hanh vi cu truoc
+    # v5) - nhung KHONG con dung cho chuong nao co pause_points that, vi se
+    # lech thoi gian phu de sau moi diem pause_long (da xac nhan bang code:
+    # PAUSE_LONG_DURATION_MS=1400ms != scalar default thuong ~300-500ms).
+    if boundary_silences is None:
+        chunks = split_text_for_tts(full_text.strip(), max_words=250)
+        boundary_silences = [silence] * max(0, len(chunks) - 1)
+    else:
+        chunks, _ = split_text_with_boundaries(full_text.strip(), max_words=250)
 
     pairs = min(len(chunks), len(wav_files))
     srt_entries = []
@@ -112,8 +123,10 @@ def generate_srt(chapter_dir, text_file=None, silence=0.5, max_chars=60):
 
         sub_lines = split_text_to_subtitle_lines(chunks[i], max_chars)
 
+        gap = boundary_silences[i] if i < len(boundary_silences) else silence
+
         if not sub_lines:
-            cursor = part_end + silence
+            cursor = part_end + gap
             continue
 
         # Chia thời lượng của cả phần (dur) cho từng dòng phụ đề THEO TỈ LỆ
@@ -131,7 +144,7 @@ def generate_srt(chapter_dir, text_file=None, silence=0.5, max_chars=60):
             index += 1
             line_start = line_end
 
-        cursor = part_end + silence
+        cursor = part_end + gap
 
     chapter_name = os.path.basename(chapter_dir)
     srt_path = os.path.join(chapter_dir, f"{chapter_name}_merged.srt")

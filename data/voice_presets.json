@@ -1,0 +1,36 @@
+{
+  "_placeholder": false,
+  "_note": "Step 3 (2026-09-11, engine reversal Piper -> VieNeu-TTS). All 23 voice IDs below are REAL VieNeu-TTS v3 Turbo preset voices (confirmed via vieneu.list_preset_voices(), see scratch_check/test_vieneu_basic.py) - 'id' is the exact string to pass as infer(voice=...). gender/region/style come DIRECTLY from that API's own returned labels (format 'Gender · Region · Style'), not guessed from names. 'style' here is descriptive metadata ONLY, carried over from VieNeu's own preset label - it is NOT passed to infer() as a parameter, since the README explicitly says style is deprecated/ignored on v3 Turbo (whatever you pass has no effect - the reading character is baked into each voice's reference). genre_to_voice below is a FIRST PASS built from voices whose baked-in style is 'doc_truyen' (story-reading/audiobook) - the closest fit for narrating novel chapters - chosen for plausible genre fit (e.g. male voice for kiem_hiep/wuxia, female voices for ngon_tinh/trinh_tham), NOT validated by an actual listening pass yet. Needs a real listening review before treating this mapping as final. 'khac' (2026-09-12, phan hoi nguoi dung: ep Alpha chi duoc chon 1 trong 3 the loai that su gay 'distortion' - vd 1 truyen hai/gia dinh/phieu luu bi ep nham vao kiem_hiep/ngon_tinh/trinh_tham vi Literal cua Pydantic khong cho phep gia tri nao khac) la 1 LUA CHON HOP LE, KHONG PHAI fallback am tham nhu 'default' - Alpha duoc phep chu dong chon 'khac' khi van ban khong khop ro rang voi 3 the loai con lai, thay vi bi buoc chon 1 trong 3 gia tri sai. Dung chung giong voice voi 'default' vi chua co giong rieng cho 'khac'.",
+  "voices": [
+    { "id": "Minh Đức", "display_name": "Minh Đức (Nam, Bắc, tin tức)", "gender": "male", "region": "bac", "style": "tin_tuc" },
+    { "id": "Phạm Tuyên", "display_name": "Phạm Tuyên (Nam, Bắc, tự nhiên)", "gender": "male", "region": "bac", "style": "tu_nhien" },
+    { "id": "Thái Sơn", "display_name": "Thái Sơn (Nam, Nam, kể chuyện)", "gender": "male", "region": "nam", "style": "ke_chuyen" },
+    { "id": "Xuân Vĩnh", "display_name": "Xuân Vĩnh (Nam, Bắc, tự nhiên)", "gender": "male", "region": "bac", "style": "tu_nhien" },
+    { "id": "Thanh Bình", "display_name": "Thanh Bình (Nam, Bắc, kể chuyện)", "gender": "male", "region": "bac", "style": "ke_chuyen" },
+    { "id": "Trúc Ly", "display_name": "Trúc Ly (Nữ, Bắc, tự nhiên)", "gender": "female", "region": "bac", "style": "tu_nhien" },
+    { "id": "Ngọc Linh", "display_name": "Ngọc Linh (Nữ, Bắc, kể chuyện)", "gender": "female", "region": "bac", "style": "ke_chuyen" },
+    { "id": "Đoan Trang", "display_name": "Đoan Trang (Nữ, Bắc, tự nhiên)", "gender": "female", "region": "bac", "style": "tu_nhien" },
+    { "id": "Mai Anh", "display_name": "Mai Anh (Nữ, Bắc, tin tức)", "gender": "female", "region": "bac", "style": "tin_tuc" },
+    { "id": "Thục Đoan", "display_name": "Thục Đoan (Nữ, Nam, kể chuyện)", "gender": "female", "region": "nam", "style": "ke_chuyen" },
+    { "id": "Minh Triết", "display_name": "Minh Triết (Nam, Nam, tin tức)", "gender": "male", "region": "nam", "style": "tin_tuc" },
+    { "id": "Thùy Dung", "display_name": "Thùy Dung (Nữ, Nam, tin tức)", "gender": "female", "region": "nam", "style": "tin_tuc" },
+    { "id": "Quang Sơn", "display_name": "Quang Sơn (Nam, Trung, tự nhiên)", "gender": "male", "region": "trung", "style": "tu_nhien" },
+    { "id": "Ngọc Trân", "display_name": "Ngọc Trân (Nữ, Trung, tự nhiên)", "gender": "female", "region": "trung", "style": "tu_nhien" },
+    { "id": "Mỹ Duyên", "display_name": "Mỹ Duyên (Nữ, Nam, đọc truyện)", "gender": "female", "region": "nam", "style": "doc_truyen" },
+    { "id": "Quỳnh Anh", "display_name": "Quỳnh Anh (Nữ, Bắc, đọc truyện)", "gender": "female", "region": "bac", "style": "doc_truyen" },
+    { "id": "Đức Trí", "display_name": "Đức Trí (Nam, Nam, đọc truyện)", "gender": "male", "region": "nam", "style": "doc_truyen" },
+    { "id": "Kim Thanh", "display_name": "Kim Thanh (Nữ, Nam, đọc truyện)", "gender": "female", "region": "nam", "style": "doc_truyen" },
+    { "id": "Ngọc Huyền", "display_name": "Ngọc Huyền (Nữ, Bắc, giọng tự nhiên)", "gender": "female", "region": "bac", "style": "tu_nhien" },
+    { "id": "Adam", "display_name": "Adam (Nam, Nam, giọng tự nhiên)", "gender": "male", "region": "nam", "style": "tu_nhien" },
+    { "id": "Mạnh Dũng", "display_name": "Mạnh Dũng (Nam, Bắc, tự nhiên)", "gender": "male", "region": "bac", "style": "tu_nhien" },
+    { "id": "Minh Quân", "display_name": "Minh Quân (Nam, Bắc, tự nhiên - mặc định)", "gender": "male", "region": "bac", "style": "tu_nhien" },
+    { "id": "Anh Khôi", "display_name": "Anh Khôi (Nam, Bắc, kể chuyện)", "gender": "male", "region": "bac", "style": "ke_chuyen" }
+  ],
+  "genre_to_voice": {
+    "kiem_hiep": "Đức Trí",
+    "ngon_tinh": "Mỹ Duyên",
+    "trinh_tham": "Kim Thanh",
+    "khac": "Đức Trí",
+    "default": "Đức Trí"
+  }
+}

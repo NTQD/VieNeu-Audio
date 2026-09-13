@@ -1,0 +1,61 @@
+# Bien the GPU cua backend/Dockerfile (2026-09-13, yeu cau nguoi dung: dong
+# goi de test tren may co GPU - RTX 5050, driver 595.79, CUDA 13.2, Windows).
+# Build context PHAI la goc repo (giong Dockerfile CPU) - xem docker-compose.yml.
+#
+# CUDA 12.8.0 (khong phai ban moi nhat theo driver 13.2 tren may dich) - dung
+# CHINH XAC version da duoc chinh nhom VieNeu-TTS xac nhan tuong thich (xem
+# pyproject.toml dong 106-107: torch==2.8.0 tu index cu128, va
+# docker/Dockerfile.gpu goc cua SDK cung dung nvidia/cuda:12.8.0). Driver
+# 595.79/CUDA 13.2 tren may GPU tuong thich NGUOC voi container CUDA 12.8 -
+# khong can khop dung tuyet doi, chi can driver >= version container yeu cau.
+FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# python3.12 khong co san tren Ubuntu 24.04 apt mac dinh cho python3-pip di
+# kem dung version - dung deadsnakes PPA giong docker/Dockerfile.gpu goc cua
+# SDK, de dam bao dung Python 3.12 (khop uv.lock/cp312 wheel cua lmdeploy...).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 \
+    python3.12-venv \
+    python3-pip \
+    ffmpeg \
+    espeak-ng \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1
+
+WORKDIR /app
+
+# Cai torch==2.8.0 (cu128) TRUOC - dung CHINH XAC ban da xac nhan ho tro GPU
+# Blackwell (RTX 50-series) qua pyproject.toml goc cua SDK - de khi
+# sentence-transformers + vieneu[cuda] sau do cung doi hoi "torch", pip dung
+# lai ban CUDA nay thay vi tu resolve 1 ban CPU-only hoac CUDA khac ban.
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+    torch==2.8.0 torchaudio==2.8.0 \
+    --index-url https://download.pytorch.org/whl/cu128
+
+COPY backend/requirements-gpu.txt /app/backend/requirements-gpu.txt
+RUN python3 -m pip install --no-cache-dir --break-system-packages -r /app/backend/requirements-gpu.txt
+
+COPY voxdirector /app/voxdirector
+COPY pipeline /app/pipeline
+COPY data /app/data
+COPY backend/app /app/backend/app
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONIOENCODING=utf-8
+ENV PYTHONPATH=/app
+# 8GB VRAM tren may dich (RTX 5050 laptop) - de Whisper (Gamma QA) khong
+# tranh VRAM voi VieNeu-TTS, mac dinh giu Whisper tren CPU (co the doi qua
+# docker-compose.gpu.yml neu muon test full-GPU). VieNeu-TTS van tu dung GPU
+# qua torch.cuda.is_available() - khong lien quan bien nay.
+ENV VOXDIRECTOR_WHISPER_DEVICE=cpu
+
+WORKDIR /app/backend
+EXPOSE 8000
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

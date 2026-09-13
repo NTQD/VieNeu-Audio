@@ -1,0 +1,79 @@
+# VoxDirector AI - Section 12 cua spec ("Docker Compose (FastAPI + Next.js +
+# nginx + certbot)"). "docker compose up" chay ca 3 service chinh trong 1
+# lenh - dung nhu doi ngu da xac nhan (2026-09-10): KHONG can gop
+# backend+frontend vao 1 container duy nhat, 3 service rieng qua 1 file
+# compose la du va sach hon.
+#
+# KHONG lien quan toi docker/docker-compose.yml (file do la cho goi SDK rieng
+# `vieneu` tren PyPI, khong phai VoxDirector - xem ghi chu trong
+# pyproject.toml). File nay danh RIENG cho VoxDirector AI.
+#
+# Truoc khi chay tren VPS that: sua GEMINI_API_KEY trong .env (goc repo,
+# KHONG commit file .env that), va NEXT_PUBLIC_API_URL/DOMAIN_NAME cho dung
+# domain that su cua ban - xem README trien khai (deploy/README.md).
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    # KHONG dat container_name co dinh - ten container tro thanh duy nhat
+    # toan cuc tren may Docker (khong scope theo project), nen 2 checkout
+    # cua repo nay chay "docker compose up" cung luc (vd. dev dang test o
+    # worktree trong khi ban dang chay o checkout chinh) se DAM VAO NHAU -
+    # xac nhan co THAT 2026-09-10. Bo container_name de Compose tu dat ten
+    # theo project (thu muc chua docker-compose.yml), khong con xung dot.
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - voxdirector_chroma:/app/voxdirector/.chroma
+      - voxdirector_jobs:/app/backend/app/_jobs
+    expose:
+      - "8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # RONG mac dinh - nginx la 1 origin duy nhat phuc vu ca frontend lan
+        # proxy /api/*, nen frontend chi can goi DUONG DAN TUONG DOI. Dat
+        # gia tri "http://localhost:8000" o day tung gay loi THAT
+        # (ERR_CONNECTION_REFUSED, 2026-09-10) vi cong 8000 cua backend
+        # khong duoc publish ra host - xem frontend/src/lib/api.ts.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+    depends_on:
+      - backend
+    expose:
+      - "3000"
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      - backend
+      - frontend
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - certbot_www:/var/www/certbot:ro
+    ports:
+      - "80:80"
+    restart: unless-stopped
+
+  # Tuy chon - chi can khi trien khai VPS that voi domain that (khong can
+  # cho "make check"/local test tren may dev). Chay 1 lan de lay cert, hoac
+  # dinh ky renew - xem deploy/README.md.
+  certbot:
+    image: certbot/certbot
+    volumes:
+      - certbot_www:/var/www/certbot
+      - certbot_conf:/etc/letsencrypt
+    profiles: ["certbot"]
+
+volumes:
+  voxdirector_chroma:
+  voxdirector_jobs:
+  certbot_www:
+  certbot_conf:

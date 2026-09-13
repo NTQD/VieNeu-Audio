@@ -57,6 +57,27 @@ def seed_entries(entries: list[GlossaryEntry]) -> None:
         add_entry(entry)
 
 
+def seed_from_file(path=None) -> int:
+    """Nạp glossary seed từ data/glossary_seed.json (Section 6.3 của spec —
+    team-uploaded qua POST /api/settings/glossary-seed, KHÔNG hardcode).
+    path=None dùng config.GLOSSARY_SEED_PATH mặc định.
+
+    Trả về số entry đã nạp. File với "entries": [] (hoặc chưa từng upload
+    gì) là trạng thái bình thường ở chương đầu tiên — không phải lỗi, xem
+    query_glossary()."""
+    import json
+
+    from voxdirector.config import GLOSSARY_SEED_PATH
+
+    load_path = path or GLOSSARY_SEED_PATH
+    with open(load_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    entries = [GlossaryEntry(**e) for e in data.get("entries", [])]
+    seed_entries(entries)
+    return len(entries)
+
+
 def query_glossary(chapter_text: str, top_k: int = GLOSSARY_TOP_K) -> list[dict]:
     """Truy xuất top-k glossary entry liên quan nhất tới nội dung 1 chương —
     dùng làm glossary_context truyền vào Agent Beta trước khi gọi LLM.

@@ -1,0 +1,18 @@
+# Override GPU (2026-09-13) - dung KEM voi docker-compose.yml (khong thay
+# the), qua: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# Chi doi 2 thu: (1) build tu backend/Dockerfile.gpu thay vi Dockerfile CPU,
+# (2) cap quyen truy cap GPU NVIDIA cho container qua NVIDIA Container
+# Toolkit (Docker Desktop tren Windows tu dong cai dat khi bat "GPU support"
+# trong Settings > Resources, xem docs/voxdirector/RUNNING_GPU.md).
+services:
+  backend:
+    build:
+      dockerfile: backend/Dockerfile.gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

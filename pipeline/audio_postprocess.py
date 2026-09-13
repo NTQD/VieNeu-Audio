@@ -99,6 +99,25 @@ def concat_with_variable_silence(ffmpeg, wav_files, silence_durations, output_pa
     return output_path
 
 
+def durations_from_boundary_flags(boundary_flags, default_silence_s, pause_long_ms=None):
+    """Chuyen list boundary_flags (tu text_splitter.split_text_with_boundaries)
+    thanh list do dai khoang lang (giay) - Section 7.2 cua spec (v5).
+
+    "default" -> default_silence_s (mac dinh nguoi dung dieu chinh o UI).
+    "pause_long" -> config.PAUSE_LONG_DURATION_MS / 1000.
+
+    pause_long_ms=None thi doc tu config (import lazy o day de audio_postprocess
+    khong bat buoc co voxdirector/ khi test 1 minh)."""
+    if pause_long_ms is None:
+        from voxdirector.config import PAUSE_LONG_DURATION_MS
+        pause_long_ms = PAUSE_LONG_DURATION_MS
+    pause_long_s = pause_long_ms / 1000.0
+    return [
+        pause_long_s if flag == "pause_long" else default_silence_s
+        for flag in boundary_flags
+    ]
+
+
 def concat_with_silence(ffmpeg, wav_files, silence_duration, output_path):
     """Ghép các file .wav phần của 1 chương, chèn khoảng lặng ĐỀU (cùng 1 độ
     dài) giữa mỗi cặp file — wrapper tiện lợi giữ hành vi cũ (trước v5, khi

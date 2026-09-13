@@ -1,0 +1,45 @@
+# Backend that (Step 9+15 cua build order) - KHONG dung pyproject.toml o
+# goc repo (do la dependency cua goi SDK `vieneu` rieng biet - torch,
+# llama-cpp-python, gradio, lmdeploy... hoan toan khong can cho VoxDirector,
+# xem ghi chu trong pyproject.toml dong 168-172). File nay liet ke DUNG
+# nhung gi voxdirector/ + pipeline/ + backend/ thuc su import, phien ban da
+# xac nhan hoat dong THAT tren may nay (2026-09-10) - khong doan.
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+
+# voxdirector/llm_client.py
+google-genai>=2.8.0
+
+# pipeline/vieneu_tts.py - TTS engine (Piper go bo hoan toan 2026-09-11, quay
+# lai VieNeu-TTS). GHIM CHINH XAC (khong dung "vieneu" loi/khong pin) - xac
+# nhan co THAT (2026-09-11): venv chung cua du an co san 1 ban `vieneu`
+# EDITABLE INSTALL tro thang vao src/vieneu/ cua CHINH repo nay (goi SDK
+# rieng, phien ban 2.7.0, kien truc CU khac han README) - de pip tu chon
+# ban nao no thay hop se AN THAM lay ban local cu do thay vi ban PyPI that.
+# Backend PHAI dung venv RIENG (backend/.venv), KHONG BAO GIO dung venv
+# chung cua repo, va PHAI ghim dung version - xem
+# voxdirector/config.py:EXPECTED_VIENEU_VERSION + kiem tra luc khoi dong
+# trong backend/app/main.py.
+vieneu==3.6.4
+
+# voxdirector/glossary/store.py - RAG glossary. sentence-transformers keo
+# theo transformers+torch(CPU) lam dependency that cua no, khong tranh duoc
+# neu giu nguyen huong tiep can embedding local nay.
+chromadb>=1.5.9
+sentence-transformers>=6.0.1
+# QUAN TRONG: chromadb (qua opentelemetry-exporter-otlp-proto-grpc) yeu cau
+# protobuf runtime >= gencode duoc bien dich san trong no - xac nhan LOI
+# THAT tren may nay (2026-09-10) voi protobuf 6.33.2 (VersionError: gencode
+# 6.33.5 > runtime 6.33.2). Ghim >=6.33.5 de tranh crash ngay luc import.
+protobuf>=6.33.5
+
+# voxdirector/agents/gamma_qa.py - QA (ASR round-trip)
+faster-whisper>=1.2.1
+jiwer>=4.0.0
+
+# QUAN TRONG: numpy>2.3 lam numba (dependency giao tiep cua mot so package
+# ML khac trong moi truong nay) tu choi import - xac nhan LOI THAT
+# (2026-09-10): "Numba needs NumPy 2.3 or less. Got NumPy 2.5." Ghim tran
+# de tranh regression tuong tu trong container.
+numpy<=2.3

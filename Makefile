@@ -226,3 +226,34 @@ check:
 
 clean:
 	rm -rf .venv __pycache__ .pytest_cache
+
+# ============================================================
+# VoxDirector AI - CPU/GPU parallel dev workflow (2026-09-13)
+# Khong dung chung dependency/target voi phan SDK vieneu o tren - day la
+# lop ung dung web (frontend+backend) rieng, xem docker-compose.yml.
+# ============================================================
+.PHONY: cpu-up cpu-down cpu-build gpu-up gpu-down gpu-build vox-logs vox-ps
+
+cpu-build:
+	docker compose build
+
+cpu-up:
+	docker compose up --build -d
+
+cpu-down:
+	docker compose down
+
+gpu-build:
+	docker compose -f docker-compose.yml -f docker-compose.gpu.yml build
+
+gpu-up:
+	docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build -d
+
+gpu-down:
+	docker compose -f docker-compose.yml -f docker-compose.gpu.yml down
+
+vox-logs:
+	docker compose logs -f backend
+
+vox-ps:
+	docker compose ps

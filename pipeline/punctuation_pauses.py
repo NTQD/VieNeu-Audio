@@ -1,6 +1,16 @@
 """Section 7.3 (v5, CÓ ĐIỀU KIỆN — xem Section 11 Step 0 của spec) — ngắt
 nghỉ ngắn tại dấu câu bên trong 1 chunk ~250-từ.
 
+LƯU Ý (2026-09-11): Piper đã bị GỠ BỎ HOÀN TOÀN khỏi TTS engine (đảo ngược
+quyết định 2026-09-10, quay lại VieNeu-TTS). Toàn bộ phần "CƠ CHẾ" bên dưới
+mô tả hành vi CỤ THỂ của Piper (đã xác nhận qua đọc mã nguồn piper-tts lúc
+đó) — đây là LỊCH SỬ giải thích vì sao module này tồn tại, KHÔNG còn là mô tả
+đúng cho engine hiện tại. Cơ chế tách-mảnh-rồi-tự-ghép-khoảng-lặng
+(concat_with_variable_silence) vẫn engine-agnostic và nhiều khả năng tái sử
+dụng được, nhưng cần XÁC NHẬN LẠI bằng thực nghiệm với VieNeu-TTS (VieNeu có
+thể tự xử lý ngắt nghỉ dấu câu khác với Piper — không giả định giống nhau)
+trước khi coi module này là bắt buộc cho engine mới.
+
 CHỈ xây dựng vì Step 0 đã xác nhận THẬT (không suy đoán) là Piper không tự
 tạo ngắt nghỉ đủ tự nhiên: dấu phẩy/chấm/hỏi/than chỉ tạo khoảng lặng
 23-46ms (dưới ngưỡng cảm nhận rõ rệt của người nghe), còn "..." và dấu gạch

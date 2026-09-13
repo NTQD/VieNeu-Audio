@@ -1,5 +1,5 @@
 """Phát hiện thiết bị (CPU/GPU) dùng CHUNG cho toàn bộ dự án — 1 nguồn sự
-thật duy nhất, không hardcode "cpu"/"cuda" rải rác ở nhiều nơi (Piper TTS,
+thật duy nhất, không hardcode "cpu"/"cuda" rải rác ở nhiều nơi (VieNeu-TTS,
 faster-whisper của Agent Gamma trong voxdirector/config.py).
 
 Giữ nguyên từ v3/VieNeu-TTS (Section 5.2 của spec: "Device Detection —
@@ -23,6 +23,20 @@ import logging
 import shutil
 
 logger = logging.getLogger("VoxDirector.device")
+
+
+def _safe_print(message: str) -> None:
+    """print() thuong nhung KHONG BAO GIO crash tien trinh vi loi encode -
+    xac nhan co THAT (khong suy doan): uvicorn tren Windows console mac dinh
+    dung codepage cp1252 (khong phai UTF-8), khien print() 1 chuoi co dau
+    tieng Viet (vd. "Thiết bị") nem UnicodeEncodeError va sap toan bo tien
+    trinh server ngay tu luc import config.py (detect_device() chay o module
+    level). Day la ham log tien ich, KHONG duoc phep lam sap ung dung chinh -
+    fallback ve ASCII (bo dau) neu console khong ho tro UTF-8."""
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        print(message.encode("ascii", errors="replace").decode("ascii"))
 
 _cached_device = None  # detect 1 lần, dùng lại cho các lần gọi sau trong cùng tiến trình
 
@@ -57,7 +71,7 @@ def detect_device() -> str:
             pass
 
     message = f"[VoxDirector] Thiết bị được chọn: {device.upper()} ({reason})"
-    print(message)
+    _safe_print(message)
     logger.info(message)
 
     # Chỉ để LOG cho người dùng biết thêm, KHÔNG dùng để đổi `device` — xem
@@ -72,7 +86,7 @@ def detect_device() -> str:
             "có GPU thật sự muốn dùng, cần cài lại torch/onnxruntime-gpu (và, riêng cho "
             "backbone GGUF, llama-cpp-python) bản có hỗ trợ CUDA."
         )
-        print(note)
+        _safe_print(note)
         logger.info(note)
 
     _cached_device = device

@@ -31,3 +31,11 @@ thumbnail_*.png
 scratch_check/piper_voices/
 *.onnx
 *.onnx.json
+
+# VoxDirector AI
+frontend/node_modules/
+frontend/.next/
+backend/.venv/
+backend/app/_jobs/
+voxdirector/.chroma/
+scratch_check/out/

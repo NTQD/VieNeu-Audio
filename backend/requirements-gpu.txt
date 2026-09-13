@@ -1,0 +1,33 @@
+# Bien the GPU cua backend/requirements.txt (2026-09-13) - GIONG HET, chi
+# khac o 1 dong: "vieneu[cuda]==3.6.4" thay vi "vieneu==3.6.4". torch/
+# torchaudio DA duoc cai truoc (dung index cu128) trong backend/Dockerfile.gpu,
+# nen KHONG lap lai o day - de pip tu thoa man dependency "torch" (khong ghim
+# version) cua extra "cuda" bang ban da cai san, tranh bi ghi de bang 1 ban
+# khac (vd. CPU-only tu PyPI mac dinh).
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+
+# voxdirector/llm_client.py
+google-genai>=2.8.0
+
+# pipeline/vieneu_tts.py - TTS engine. extra "cuda" (xac nhan qua
+# importlib.metadata cua ban PyPI that, 2026-09-13: Provides-Extra bao gom
+# "cuda" -> torch/transformers/safetensors, RIENG cho kien truc v3 Turbo -
+# KHAC voi extra "legacy" nang hon cho kien truc cu). Van GHIM CHINH XAC
+# version, cung ly do voi ban CPU - xem backend/requirements.txt.
+vieneu[cuda]==3.6.4
+
+# voxdirector/glossary/store.py - RAG glossary.
+chromadb>=1.5.9
+sentence-transformers>=6.0.1
+protobuf>=6.33.5
+
+# voxdirector/agents/gamma_qa.py - QA (ASR round-trip). Mac dinh chay CPU
+# tren bien the GPU nay (xem VOXDIRECTOR_WHISPER_DEVICE trong Dockerfile.gpu -
+# tranh tranh VRAM voi VieNeu-TTS tren GPU 8GB) - package van cai binh thuong,
+# chi khac o bien moi truong chon device luc chay.
+faster-whisper>=1.2.1
+jiwer>=4.0.0
+
+numpy<=2.3

@@ -1,0 +1,7 @@
+{
+  "_placeholder": true,
+  "_note": "Step 3a (2026-09-11, engine reversal to VieNeu-TTS): values are now VieNeu-TTS's official inline bracket-tag syntax, not bare onomatopoeia text — confirmed against the VieNeu-TTS README's 'Emotion cues (experimental)' section, which documents EXACTLY 3 supported tags: [cười], [thở dài], [hắng giọng]. The old labels 'khoc'/'gian_du'/'ngac_nhien' were REMOVED rather than assigned invented tags, since the README does not document a bracket tag for crying/anger/surprise — inventing one would be unverified syntax the model was never trained to recognize. Re-add them once VieNeu-TTS documents (or a real listening test confirms) additional supported tags. The README marks this whole feature EXPERIMENTAL — flag for a listening check once the pipeline runs end-to-end (Beta actually inserting a tag has not been verified against real audio yet).",
+  "cuoi": ["[cười]"],
+  "tho_dai": ["[thở dài]"],
+  "hang_giong": ["[hắng giọng]"]
+}
