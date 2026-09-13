@@ -82,6 +82,18 @@ PAUSE_LONG_TOKEN = "[[PAUSE_LONG]]"
 # điểm khởi đầu, không phải con số đã được xác nhận qua nghe thật.
 PAUSE_LONG_DURATION_MS = 1400
 
+# Phase 2 cua ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md ("Map-reduce
+# restructure cho tieu thuyet dai") - Alpha chia raw_text thanh cac cua so
+# (window) chong lan nhau khi van ban vuot qua nguong nay, thay vi 1 lan goi
+# duy nhat khong gioi han (chua tung duoc kiem chung voi tieu thuyet dai
+# that su 50k+ tu). GIA TRI TAM THOI, CHUA CHOT - can nguoi that doc thu ket
+# qua tach chuong tren 1 cuon dai that de tinh chinh, giong tinh than
+# PAUSE_LONG_DURATION_MS o tren. Khi raw_text <= nguong nay, pipeline chi co
+# DUNG 1 cua so (= toan bo van ban) - hanh vi giong het truoc day, khong co
+# thay doi cho van ban ngan/binh thuong da kiem chung qua Phase 0/1.
+ALPHA_WINDOW_CHARS = int(os.environ.get("VOXDIRECTOR_ALPHA_WINDOW_CHARS", "30000"))
+ALPHA_WINDOW_OVERLAP_CHARS = int(os.environ.get("VOXDIRECTOR_ALPHA_WINDOW_OVERLAP_CHARS", "3000"))
+
 # TTS engine (2026-09-11: dao nguoc quyet dinh dung Piper, quay lai
 # VieNeu-TTS). GHIM CHINH XAC version, khong dung constraint long (>=) - xac
 # nhan co THAT (2026-09-11): venv CHUNG cua repo nay co san 1 ban `vieneu`

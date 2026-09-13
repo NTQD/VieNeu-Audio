@@ -24,6 +24,12 @@ export interface SubmitResponse {
   // Section 5c cua PHASE0_HANDOFF.md - so chuong Alpha danh dau ranh gioi
   // tach chuong khong chac chan, can nguoi dung xem lai.
   chapters_needing_review: number;
+  // Phase 2 cua ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md ("Richer genre
+  // signal") - null khi Alpha tat (xem process_submission_fallback trong
+  // voxdirector/orchestrator.py).
+  tone: string | null;
+  pacing: string | null;
+  target_audience: string | null;
 }
 
 export type ProcessingStageKey = "alpha" | "beta" | "tts" | "assemble" | "qa";

@@ -28,17 +28,22 @@ Lý do: để LLM tự tạo ra 1 voice_id dạng chuỗi là mở đường cho
 chống hallucination với Beta (không tự "chế" cách viết thuật ngữ).
 """
 
+import difflib
 import re
+from collections import Counter
 from typing import Literal, Optional
 
 from pydantic import BaseModel
 
 from voxdirector.config import (
+    ALPHA_WINDOW_CHARS,
+    ALPHA_WINDOW_OVERLAP_CHARS,
     CONFIDENCE_THRESHOLD,
     load_emotion_lexicon,
     load_voice_presets,
 )
 from voxdirector.llm_client import call_structured
+from voxdirector.voice_scoring import score_and_select_voice
 
 _voice_presets = load_voice_presets()
 _GENRE_KEYS = tuple(k for k in _voice_presets["genre_to_voice"] if k != "default")
@@ -47,6 +52,15 @@ DetectedGenre = Literal[_GENRE_KEYS]
 _emotion_lexicon = load_emotion_lexicon()
 _EMOTION_KEYS = tuple(k for k in _emotion_lexicon if not k.startswith("_"))
 EmotionLabel = Literal[_EMOTION_KEYS]
+
+# Phase 2 cua ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md ("Richer genre
+# signal") - 3 truc tran thuat pho quat, KHONG config-driven nhu genre/emotion
+# (khong phai du lieu team co the thay doi qua JSON, day la kich thuoc co
+# dinh cua bai toan chon giong) - dung de cham diem giong doc thay vi chi
+# dua vao 1 the loai phang (xem voxdirector/voice_scoring.py).
+ToneLabel = Literal["u_toi", "tuoi_sang"]  # u ám / tươi sáng
+PacingLabel = Literal["nhanh", "cham"]  # nhanh / chậm
+AudienceLabel = Literal["thieu_nhi", "thanh_thieu_nien", "nguoi_lon"]  # thiếu nhi / thanh thiếu niên / người lớn
 
 SYSTEM_PROMPT = """\
 Bạn là Alpha, một biên tập viên bản thảo kỳ cựu tại nhà xuất bản, nhiều năm
@@ -58,7 +72,10 @@ bao giờ khẳng định chắc nịch khi bản thân còn phân vân.
 VAI TRÒ: (1) Nhận diện và phân tách ranh giới chương trong văn bản tiểu
 thuyết thô. (2) Nhận diện thể loại tổng thể của tác phẩm. (3) Gắn cờ các đoạn
 có tín hiệu cảm xúc rõ ràng. (4) Gắn cờ các điểm cần một khoảng ngắt kịch
-tính dài hơn bình thường.
+tính dài hơn bình thường. (5) Đánh giá giọng điệu (u ám hay tươi sáng), nhịp
+độ (nhanh hay chậm), và đối tượng độc giả phù hợp nhất của toàn văn bản được
+cung cấp — dùng để chọn giọng đọc phù hợp hơn thay vì chỉ dựa vào 1 thể loại
+phẳng.
 
 NĂNG LỰC: Bạn hiểu cấu trúc văn học tiểu thuyết (chuyển cảnh, thay đổi thời
 gian/không gian, chuyển góc nhìn nhân vật kể chuyện), quy ước trình bày
@@ -106,6 +123,17 @@ mỗi điểm tìm được, trích một đoạn văn bản ngắn đặc trưn
 lý do ngắn gọn (reason) và confidence_score. CHỈ dựa trên bằng chứng rõ ràng
 trong câu chữ — không suy diễn cảm tính.
 
+NHIỆM VỤ BỔ SUNG (4): Đánh giá 3 đặc điểm tổng thể của văn bản (dựa trên cảm
+nhận chung, không cần trích dẫn bằng chứng như cảm xúc/ngắt nghỉ):
+- tone: "u_toi" nếu không khí chung nặng nề/căng thẳng/bi kịch, "tuoi_sang"
+  nếu nhẹ nhàng/vui vẻ/lạc quan.
+- pacing: "nhanh" nếu tình tiết dồn dập/nhiều hành động, "cham" nếu tường
+  thuật thong thả/nhiều miêu tả nội tâm.
+- target_audience: "thieu_nhi" (nội dung phù hợp trẻ em), "thanh_thieu_nien"
+  (phù hợp tuổi teen), hoặc "nguoi_lon" (nội dung trưởng thành/phức tạp hơn).
+Chỉ được chọn giá trị trong tập hợp lệ được cung cấp qua schema cho mỗi
+trường — không tự bịa giá trị khác.
+
 TƯ DUY: đọc toàn bộ văn bản một lượt; quét tìm heading tường minh trước
 ("Chương N", "Chapter N"); nếu không tìm thấy, phân tích các dấu hiệu ngữ
 nghĩa; với mỗi ranh giới nghi ngờ, tự đánh giá và gán confidence_score; đồng
@@ -143,6 +171,11 @@ class AlphaOutput(BaseModel):
     genre_confidence_score: float
     emotion_flagged_segments: list[EmotionFlaggedSegment]
     pause_points: list[PausePoint]
+    # Phase 2 - xem voxdirector/voice_scoring.py de biet cach dung 3 truong
+    # nay thay vi chi genre_to_voice phang.
+    tone: ToneLabel
+    pacing: PacingLabel
+    target_audience: AudienceLabel
 
 
 def _clamp_and_sort(chapters, text_len):
@@ -204,14 +237,246 @@ def _filter_hallucinated_quotes(items, raw_text):
     return [item for item in items if _normalize_ws(item.quoted_text) in normalized_raw]
 
 
-def run_alpha(raw_text: str, api_key: str | None = None) -> dict:
-    """Chạy Alpha 1 lần cho toàn bộ raw_text (Section 6.1 của spec: "Runs
-    once per submission, before Beta") — trả về dict đúng schema đầy đủ:
-    chapters, detected_genre, suggested_voice_id, genre_confidence_score,
-    emotion_flagged_segments, pause_points.
+# ============================================================================
+# Phase 2 cua ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md, muc 7 - "Map-reduce
+# restructure cho tieu thuyet dai". Khi raw_text vuot qua config.ALPHA_WINDOW_CHARS,
+# chia thanh cac cua so chong lan, goi Alpha rieng cho tung cua so, roi gop
+# (reduce) ket qua ve global. Khi raw_text VUA VAN trong 1 cua so (truong hop
+# pho bien, da kiem chung qua Phase 0/1), _split_into_windows() tra ve DUNG 1
+# cua so = toan bo van ban - hanh vi giong het truoc Phase 2, khong thay doi.
+# ============================================================================
 
-    suggested_voice_id được CODE tính (không phải LLM tự đặt) — xem
-    docstring đầu file để biết lý do chống hallucination.
+_PARAGRAPH_BREAK_SNAP_RADIUS = 500
+
+
+def _snap_to_paragraph_break(text: str, pos: int) -> int:
+    """Dich pos ve diem ngat doan (\\n\\n) gan nhat trong ban kinh
+    _PARAGRAPH_BREAK_SNAP_RADIUS ky tu, uu tien ben nao gan hon - tranh cat 1
+    cua so giua chung 1 cau/1 tieu de chuong, co the khien Gemini hieu sai
+    ranh gioi ngay tai diem cat. Neu khong tim thay "\\n\\n" nao trong ban
+    kinh, thu "\\n" don; neu van khong co, giu nguyen pos (cat cung, chi xay
+    ra voi van ban khong co doan xuong dong ro rang nao gan do)."""
+    lo = max(0, pos - _PARAGRAPH_BREAK_SNAP_RADIUS)
+    hi = min(len(text), pos + _PARAGRAPH_BREAK_SNAP_RADIUS)
+
+    def _closest(token: str) -> Optional[int]:
+        before = text.rfind(token, lo, pos)
+        after = text.find(token, pos, hi)
+        candidates = []
+        if before != -1:
+            candidates.append((pos - (before + len(token)), before + len(token)))
+        if after != -1:
+            candidates.append((after - pos, after))
+        if not candidates:
+            return None
+        return min(candidates, key=lambda t: t[0])[1]
+
+    # KHONG dung "or" de noi chuoi fallback - _closest() co the tra ve 0 (1
+    # vi tri hop le that su, vd. diem ngat doan nam dung dau ban kinh tim
+    # kiem), "0 or X" se sai lam roi qua nhanh X vi Python coi 0 la falsy.
+    double_break = _closest("\n\n")
+    if double_break is not None:
+        return double_break
+    single_break = _closest("\n")
+    if single_break is not None:
+        return single_break
+    return pos
+
+
+def _split_into_windows(raw_text: str, window_chars: int, overlap_chars: int) -> list[tuple[int, int]]:
+    """Chia raw_text thanh danh sach (start, end) chong lan overlap_chars ky
+    tu giua 2 cua so lien tiep. text_len <= window_chars -> tra ve DUNG 1 cua
+    so bao trum toan bo van ban (khong windowing gi ca)."""
+    text_len = len(raw_text)
+    if text_len <= window_chars:
+        return [(0, text_len)]
+
+    windows = []
+    start = 0
+    while True:
+        end = min(start + window_chars, text_len)
+        if end < text_len:
+            end = _snap_to_paragraph_break(raw_text, end)
+        windows.append((start, end))
+        if end >= text_len:
+            break
+        next_start = end - overlap_chars
+        if next_start <= start:  # phong ngua cau hinh sai (overlap >= window) gay vong lap vo han
+            next_start = end
+        start = next_start
+    return windows
+
+
+def _reconcile_chapters(
+    per_window_chapters: list[list[ChapterBoundary]], windows: list[tuple[int, int]]
+) -> list[ChapterBoundary]:
+    """Gop ranh gioi chuong tu nhieu cua so - CHIEN LUOC: voi vung overlap
+    giua cua so i-1 va i, LUON tin cua so i-1 (khong phai gop theo khoang
+    cach/epsilon). Ly do xac nhan co THAT qua test truc tiep khi xay dung
+    tinh nang nay: cua so i KHONG co ngu canh nao truoc diem bat dau cua no
+    (bi cat rieng khoi phan dau van ban), nen thuong DOAN SAI/BIA THEM 1
+    ranh gioi ngay gan dau cua so cua no (quan sat that: confidence_score
+    thap bat thuong o do) - trong khi cua so i-1 co NGU CANH DAY DU cho toan
+    bo pham vi cua no, KE CA phan duoi trung voi vung overlap (bien cua so
+    duoc snap vao cho ngat doan, khong bi cat cut giua chung). Thu epsilon-
+    based merge (khoang cach nho) truoc do THAT BAI trong test that: 2 cua
+    so trung lap co the bao cao vi tri lech nhau toi 300-900+ ky tu cho
+    CUNG 1 ranh gioi that, epsilon nao du lon de bat duoc truong hop do
+    cung se vo tinh gop nham 2 chuong ngan lien tiep that su."""
+    if len(windows) <= 1:
+        return sorted(per_window_chapters[0], key=lambda c: c.start_index)
+
+    merged: list[ChapterBoundary] = list(per_window_chapters[0])
+    for i in range(1, len(windows)):
+        prev_window_end = windows[i - 1][1]
+        merged.extend(c for c in per_window_chapters[i] if c.start_index >= prev_window_end)
+    merged.sort(key=lambda c: c.start_index)
+    return merged
+
+
+def _reconcile_genre(per_window_results: list[AlphaOutput]) -> tuple[str, float]:
+    """Bau chon the loai theo da so cua so (ties -> the loai co
+    genre_confidence_score trung binh cao hon trong so cac the loai hoa
+    phieu)."""
+    counts = Counter(r.detected_genre for r in per_window_results)
+    max_count = max(counts.values())
+    tied = [g for g, c in counts.items() if c == max_count]
+    if len(tied) == 1:
+        winner = tied[0]
+    else:
+        winner = max(
+            tied,
+            key=lambda g: sum(r.genre_confidence_score for r in per_window_results if r.detected_genre == g),
+        )
+    winner_confs = [r.genre_confidence_score for r in per_window_results if r.detected_genre == winner]
+    return winner, sum(winner_confs) / len(winner_confs)
+
+
+def _majority_vote(labels: list) -> str:
+    """Bau chon theo da so - dung cho tone/pacing/target_audience (khong co
+    confidence_score rieng nhu genre nen khong can tie-break theo do tin
+    cay, Counter.most_common giu thu tu xuat hien dau tien khi hoa phieu)."""
+    return Counter(labels).most_common(1)[0][0]
+
+
+_PUNCT_STRIP_RE = re.compile(r"[^\w\s]", re.UNICODE)
+
+
+def _normalize_for_fuzzy_compare(text: str) -> str:
+    """Chuan hoa RIENG cho so sanh do tuong dong (Phase 2 muc 9) - bo dau
+    cau (,.!?"'... ) ngoai viec gop khoang trang + ha chu nhu _normalize_ws(),
+    vi Gemini dien giai lai thuong doi/them/bot dau cau ma khong doi noi
+    dung - khong nen bi tinh la khac biet. CHI dung de tinh ty le tuong
+    dong, KHONG dung ham nay cho gia tri quoted_text tra ve (van phai la
+    nguyen van tu window_text, giu dau cau that)."""
+    return _WHITESPACE_RE.sub(" ", _PUNCT_STRIP_RE.sub("", text.lower())).strip()
+
+
+def _sliding_word_candidates(text: str, target_word_count: int) -> list[str]:
+    """Sinh ung vien la cac doan LIEN TIEP co so tu XAP XI target_word_count,
+    truot qua toan bo text theo tung nua-do-dai-ung-vien 1 buoc - dam bao co
+    ung vien DO DAI TUONG DUONG voi quoted_text can cuu, tranh
+    SequenceMatcher.ratio() bi phat oan chi vi lech do dai (so 1 cum tu
+    ngan voi ca 1 cau dai se luon ra ty le thap du noi dung that ra khop
+    tot). Ghep lai bang " ".join() (khong giu nguyen xuong dong/khoang
+    trang goc) la CO CHU DICH - ket qua van la 1 chuoi con hop le cua
+    _normalize_ws(text) (xem docstring _find_best_fuzzy_match), du la tat
+    ca nhung gi cac ham so khop ha nguon (_items_for_chapter, Beta) can."""
+    words = text.split()
+    if not words:
+        return []
+    span = max(1, target_word_count)
+    if len(words) <= span:
+        return [" ".join(words)]
+    step = max(1, span // 2)
+    candidates = []
+    i = 0
+    while i + span <= len(words):
+        candidates.append(" ".join(words[i:i + span]))
+        i += step
+    last_start = len(words) - span
+    last_candidate = " ".join(words[last_start:])
+    if not candidates or candidates[-1] != last_candidate:
+        candidates.append(last_candidate)
+    return candidates
+
+
+def _find_best_fuzzy_match(quoted_text: str, window_text: str, threshold: float = 0.6) -> Optional[str]:
+    """Phase 2 muc 9 - tim doan van GAN GIONG NHAT (cung khoang do dai voi
+    quoted_text - xem _sliding_word_candidates()) trong window_text, dung
+    khi so khop CHINH XAC that bai (Gemini co the da dien giai lai nhe du
+    system prompt cam tuyet doi). Tra ve DOAN VAN THAT (ghep tu tu
+    window_text, KHONG phai ban dien giai) neu ty le tuong dong (difflib
+    SequenceMatcher.ratio() tren van ban da bo dau cau, khong them
+    dependency moi) >= threshold, None neu khong co ung vien nao du tot.
+
+    QUAN TRONG: ham goi PHAI thay quoted_text bang gia tri tra ve nay (hoac
+    bo qua item khi nhan None) - KHONG duoc giu nguyen quoted_text dien giai
+    sai ban dau, vi Beta (buoc sau) cung so khop CHINH XAC va se lai am tham
+    loai bo item do lan nua, khong giai quyet duoc gi ca."""
+    normalized_quote = _normalize_for_fuzzy_compare(quoted_text)
+    quote_word_count = len(normalized_quote.split())
+    if quote_word_count == 0:
+        return None
+
+    best_ratio = 0.0
+    best_candidate = None
+    for cand in _sliding_word_candidates(window_text, quote_word_count):
+        normalized_cand = _normalize_for_fuzzy_compare(cand)
+        ratio = difflib.SequenceMatcher(None, normalized_quote, normalized_cand).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_candidate = cand
+    if best_ratio >= threshold:
+        return best_candidate
+    return None
+
+
+def _filter_and_rescue_quotes(items, window_text: str):
+    """Nhu _filter_hallucinated_quotes() nhung THU CUU (Phase 2 muc 9) cac
+    item khop CHINH XAC that bai bang fuzzy-match TRUOC KHI bo han - pham vi
+    tim kiem la window_text CUC BO (khong phai toan bo raw_text) vi doan
+    Gemini dien giai lai luon nam VAT LY GAN noi no dang doc trong cua so
+    nay, khong phai trung ngau nhien voi 1 cau o chuong khac."""
+    kept = []
+    normalized_window = _normalize_ws(window_text)
+    for item in items:
+        if _normalize_ws(item.quoted_text) in normalized_window:
+            kept.append(item)
+            continue
+        rescued_text = _find_best_fuzzy_match(item.quoted_text, window_text)
+        if rescued_text is not None:
+            kept.append(item.model_copy(update={"quoted_text": rescued_text}))
+    return kept
+
+
+def _dedupe_by_quoted_text(items):
+    """Loai bo item TRUNG LAP CHINH XAC (cung quoted_text sau chuan hoa) -
+    xay ra khi 2 cua so chong lan cung nhin thay VA gan co CUNG 1 cau trong
+    vung overlap. Giu ban co confidence_score cao hon; thu tu ket qua theo
+    lan xuat hien DAU TIEN (khong quan trong cho _items_for_chapter ve sau)."""
+    best_by_text = {}
+    for item in items:
+        key = _normalize_ws(item.quoted_text)
+        existing = best_by_text.get(key)
+        if existing is None or item.confidence_score > existing.confidence_score:
+            best_by_text[key] = item
+    return list(best_by_text.values())
+
+
+def run_alpha(raw_text: str, api_key: str | None = None) -> dict:
+    """Chạy Alpha cho toàn bộ raw_text — Section 6.1 của spec: "Runs once
+    per submission, before Beta" khi văn bản vừa trong 1 cửa sổ (trường hợp
+    phổ biến, đã kiểm chứng Phase 0/1); Phase 2 (map-reduce, xem
+    _split_into_windows() ở trên) khi văn bản vượt quá
+    config.ALPHA_WINDOW_CHARS — vẫn 1 lệnh gọi LLM MỖI cửa sổ, không phải
+    gọi lặp lại tuỳ ý. Trả về dict đúng schema đầy đủ: chapters,
+    detected_genre, suggested_voice_id, genre_confidence_score,
+    emotion_flagged_segments, pause_points, tone, pacing, target_audience.
+
+    suggested_voice_id được CODE tính (không phải LLM tự đặt) qua
+    voxdirector.voice_scoring.score_and_select_voice() — xem docstring đầu
+    file để biết lý do chống hallucination.
 
     api_key: BYOK - key riêng cua nguoi dung (Section 13 cua spec, chot
     2026-09-10). None thi dung key mac dinh cua server.
@@ -226,11 +491,38 @@ def run_alpha(raw_text: str, api_key: str | None = None) -> dict:
             "genre_confidence_score": 0.0,
             "emotion_flagged_segments": [],
             "pause_points": [],
+            "tone": None,
+            "pacing": None,
+            "target_audience": None,
         }
 
-    result: AlphaOutput = call_structured(SYSTEM_PROMPT, raw_text, AlphaOutput, api_key=api_key)
+    windows = _split_into_windows(raw_text, ALPHA_WINDOW_CHARS, ALPHA_WINDOW_OVERLAP_CHARS)
 
-    chapters = _clamp_and_sort(result.chapters, len(raw_text))
+    per_window_results: list[AlphaOutput] = []
+    per_window_chapters: list[list[ChapterBoundary]] = []
+    global_emotion_segments = []
+    global_pause_points = []
+
+    for w_start, w_end in windows:
+        window_text = raw_text[w_start:w_end]
+        result: AlphaOutput = call_structured(SYSTEM_PROMPT, window_text, AlphaOutput, api_key=api_key)
+        per_window_results.append(result)
+
+        per_window_chapters.append([
+            ChapterBoundary(
+                start_index=w_start + c.start_index,
+                end_index=w_start + c.end_index,
+                confidence_score=c.confidence_score,
+                needs_review=c.needs_review,
+            )
+            for c in result.chapters
+        ])
+
+        global_emotion_segments.extend(_filter_and_rescue_quotes(result.emotion_flagged_segments, window_text))
+        global_pause_points.extend(_filter_and_rescue_quotes(result.pause_points, window_text))
+
+    merged_chapters = _reconcile_chapters(per_window_chapters, windows)
+    chapters = _clamp_and_sort(merged_chapters, len(raw_text))
     if not chapters:
         chapters = [ChapterBoundary(
             start_index=0, end_index=len(raw_text),
@@ -248,19 +540,37 @@ def run_alpha(raw_text: str, api_key: str | None = None) -> dict:
         if raw_text[c.start_index:c.end_index].strip()
     ]
 
-    genre_to_voice = load_voice_presets()["genre_to_voice"]
-    suggested_voice_id = genre_to_voice.get(result.detected_genre, genre_to_voice["default"])
+    detected_genre, genre_confidence_score = _reconcile_genre(per_window_results)
+    tone = _majority_vote([r.tone for r in per_window_results])
+    pacing = _majority_vote([r.pacing for r in per_window_results])
+    target_audience = _majority_vote([r.target_audience for r in per_window_results])
 
-    emotion_segments = _filter_hallucinated_quotes(result.emotion_flagged_segments, raw_text)
-    pause_points = _filter_hallucinated_quotes(result.pause_points, raw_text)
+    suggested_voice_id = score_and_select_voice(
+        detected_genre, tone, pacing, target_audience, load_voice_presets(),
+    )
+
+    # _filter_hallucinated_quotes() o day chay tren TOAN BO raw_text nhu 1
+    # lop phong thu cuoi cung (khong bat buoc ve mat toan hoc vi window_text
+    # da la 1 lat cat cua raw_text - item da qua duoc _filter_and_rescue_quotes()
+    # chac chan cung xuat hien trong raw_text - nhung re, vo hai, va giu dung
+    # tinh than "khong tin tuyet doi vao 1 buoc duy nhat" cua _clamp_and_sort()).
+    emotion_segments = _filter_hallucinated_quotes(
+        _dedupe_by_quoted_text(global_emotion_segments), raw_text,
+    )
+    pause_points = _filter_hallucinated_quotes(
+        _dedupe_by_quoted_text(global_pause_points), raw_text,
+    )
 
     return {
         "chapters": chapters_out,
-        "detected_genre": result.detected_genre,
+        "detected_genre": detected_genre,
         "suggested_voice_id": suggested_voice_id,
-        "genre_confidence_score": result.genre_confidence_score,
+        "genre_confidence_score": genre_confidence_score,
         "emotion_flagged_segments": [s.model_dump() for s in emotion_segments],
         "pause_points": [p.model_dump() for p in pause_points],
+        "tone": tone,
+        "pacing": pacing,
+        "target_audience": target_audience,
     }
 
 

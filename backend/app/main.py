@@ -218,6 +218,12 @@ class SubmitResponse(BaseModel):
     # (ranh gioi tach chuong khong chac chan) - truoc ban sua nay, alpha_result
     # da tinh dung field nay nhung khong bao gio roi khoi backend.
     chapters_needing_review: int
+    # Phase 2 cua ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md ("Richer genre
+    # signal") - None khi Alpha tat (process_submission_fallback khong tinh
+    # duoc, xem voxdirector/orchestrator.py).
+    tone: str | None = None
+    pacing: str | None = None
+    target_audience: str | None = None
 
 
 @app.post("/api/submit", response_model=SubmitResponse)
@@ -272,6 +278,9 @@ def submit(req: SubmitRequest):
         chapters_needing_review=sum(
             1 for c in alpha_result["chapters"] if c.get("needs_review")
         ),
+        tone=alpha_result.get("tone"),
+        pacing=alpha_result.get("pacing"),
+        target_audience=alpha_result.get("target_audience"),
     )
 
 

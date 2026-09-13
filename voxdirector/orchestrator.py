@@ -56,6 +56,7 @@ def process_submission_fallback(raw_text: str) -> dict:
         return {
             "chapters": [], "detected_genre": None, "suggested_voice_id": None,
             "genre_confidence_score": 0.0, "emotion_flagged_segments": [], "pause_points": [],
+            "tone": None, "pacing": None, "target_audience": None,
         }
 
     matches = list(_CHAPTER_HEADING_RE.finditer(raw_text))
@@ -85,6 +86,9 @@ def process_submission_fallback(raw_text: str) -> dict:
         "genre_confidence_score": 0.0,
         "emotion_flagged_segments": [],
         "pause_points": [],
+        "tone": None,
+        "pacing": None,
+        "target_audience": None,
     }
 
 
