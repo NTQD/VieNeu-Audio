@@ -372,13 +372,6 @@ STAGES = [
 ]
 
 
-def _items_for_chapter(items, chapter_text):
-    import re
-    ws_re = re.compile(r"\s+")
-    norm = lambda t: ws_re.sub(" ", t).strip()
-    normalized_chapter = norm(chapter_text)
-    return [item for item in items if norm(item["quoted_text"]) in normalized_chapter]
-
 
 @app.websocket("/api/ws/{job_id}")
 async def ws_progress(websocket: WebSocket, job_id: str):
@@ -421,6 +414,7 @@ async def ws_progress(websocket: WebSocket, job_id: str):
         })
 
         from voxdirector.orchestrator import process_chapter
+        from voxdirector.text_utils import items_for_span
 
         alpha_result = job["alpha_result"]
         raw_text = job["raw_text"]
@@ -429,8 +423,8 @@ async def ws_progress(websocket: WebSocket, job_id: str):
         chapter_results = []
         for ci, chapter in enumerate(alpha_result["chapters"]):
             chapter_text = chapter["text"]
-            chapter_emotions = _items_for_chapter(alpha_result["emotion_flagged_segments"], chapter_text)
-            chapter_pauses = _items_for_chapter(alpha_result["pause_points"], chapter_text)
+            chapter_emotions = items_for_span(alpha_result["emotion_flagged_segments"], chapter_text)
+            chapter_pauses = items_for_span(alpha_result["pause_points"], chapter_text)
 
             for stage_idx, stage_key in [(1, "beta"), (2, "tts"), (3, "assemble")]:
                 await websocket.send_json({
@@ -587,6 +581,15 @@ async def ws_progress(websocket: WebSocket, job_id: str):
             all_expression_report.extend(r["expression_report"])
             all_pause_report.extend(r["pause_report"])
 
+        # Phase 3 cua ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md, muc 12
+        # ("diff view") - diff_ops la du lieu CAP CHUONG (khac new_term_candidates/
+        # expression_report gop phang), giu nguyen 1 muc/chuong de frontend
+        # render dung "Xem thay doi cua Beta (Chuong N)" cho tung chuong rieng.
+        chapter_diffs = [
+            {"chapter": ci + 1, "diff_ops": result["diff_ops"]}
+            for ci, result in enumerate(chapter_results)
+        ]
+
         segments = []
         seg_id = 1
         for ci, result in enumerate(chapter_results):
@@ -630,6 +633,7 @@ async def ws_progress(websocket: WebSocket, job_id: str):
             "new_term_candidates": all_new_terms,
             "expression_report": all_expression_report,
             "pause_report": all_pause_report,
+            "chapter_diffs": chapter_diffs,
             "processing_time_s": processing_time_s,
             "timing_breakdown": timing_breakdown,
         })

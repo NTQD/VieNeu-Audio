@@ -28,17 +28,13 @@ import time
 from voxdirector.agents.alpha_ingestion import run_alpha
 from voxdirector.agents.beta_consistency import run_beta
 from voxdirector.config import DATA_DIR, PAUSE_LONG_TOKEN
+from voxdirector.text_utils import items_for_span
 
-_WHITESPACE_RE = re.compile(r"\s+")
 # Fallback thuan regex khi nguoi dung TAT Agent Alpha (advanced options,
 # 2026-09-12) - khong lien quan gi toi phan Alpha co the "tu tach chuong
 # ngay ca khong co heading" (do la nang luc CUA Alpha, mat luon khi tat no).
 # Chi bat dong "Chuong N"/"Chapter N" o DAU DONG - khong co gi tinh vi hon.
 _CHAPTER_HEADING_RE = re.compile(r"^\s*(?:ch[uư][oơ]ng|chapter)\s+\d+\b.*$", re.IGNORECASE | re.MULTILINE)
-
-
-def _normalize_ws(text: str) -> str:
-    return _WHITESPACE_RE.sub(" ", text).strip()
 
 
 def process_submission_fallback(raw_text: str) -> dict:
@@ -90,15 +86,6 @@ def process_submission_fallback(raw_text: str) -> dict:
         "pacing": None,
         "target_audience": None,
     }
-
-
-def _items_for_chapter(items: list[dict], chapter_text: str) -> list[dict]:
-    """Loc emotion_flagged_segments/pause_points (tinh tren TOAN BO raw_text
-    boi Alpha, chay 1 lan/submission - Section 6.1) ve dung nhung entry co
-    quoted_text nam trong chapter_text NAY - Beta chi can flag cua dung
-    chuong no dang xu ly (Section 6.2: "from Alpha, this same chapter")."""
-    normalized_chapter = _normalize_ws(chapter_text)
-    return [item for item in items if _normalize_ws(item["quoted_text"]) in normalized_chapter]
 
 
 def process_submission(raw_text: str, api_key: str | None = None, alpha_enabled: bool = True) -> dict:
@@ -194,6 +181,7 @@ def process_chapter(
         new_entry_candidates = beta_result["new_entry_candidates"]
         expression_report = beta_result["expression_report"]
         pause_report = beta_result["pause_report"]
+        diff_ops = beta_result["diff_ops"]
     else:
         # Beta tat - dung nguyen chapter_text goc, khong sua thuat ngu/chen
         # bieu cam/chen sentinel ngat dai (xem docstring tham so beta_enabled).
@@ -202,6 +190,7 @@ def process_chapter(
         new_entry_candidates = []
         expression_report = []
         pause_report = []
+        diff_ops = []
         beta_duration_s = 0.0
 
     normalized_text = normalize_text_for_tts(corrected_text)
@@ -286,6 +275,7 @@ def process_chapter(
         "new_entry_candidates": new_entry_candidates,
         "expression_report": expression_report,
         "pause_report": pause_report,
+        "diff_ops": diff_ops,
         "chunks": chunks,
         "boundary_flags": boundary_flags,
         "part_paths": part_paths,

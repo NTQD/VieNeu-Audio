@@ -43,6 +43,7 @@ from voxdirector.config import (
     load_voice_presets,
 )
 from voxdirector.llm_client import call_structured
+from voxdirector.text_utils import dedupe_by_key, normalize_ws, split_into_windows
 from voxdirector.voice_scoring import score_and_select_voice
 
 _voice_presets = load_voice_presets()
@@ -203,24 +204,6 @@ def _clamp_and_sort(chapters, text_len):
     return fixed
 
 
-_WHITESPACE_RE = re.compile(r"\s+")
-
-
-def _normalize_ws(text):
-    """Gộp mọi chuỗi khoảng trắng liên tiếp (kể cả xuống dòng) thành 1 dấu
-    cách — dùng để so khớp quoted_text, KHÔNG dùng để cắt/hiển thị text.
-
-    Lý do cần thiết (xác nhận có THẬT qua test standalone 2026-09-10, không
-    phải suy đoán): khi 1 câu trong raw_text bị xuống dòng giữa chừng (do
-    cách trình bày file gốc), Gemini trả lại đúng chính xác từng chữ nhưng
-    tự nhiên gộp chỗ xuống dòng đó thành 1 dấu cách khi tái tạo câu — đây
-    KHÔNG phải hallucination/diễn giải lại, chỉ là chuẩn hoá khoảng trắng.
-    So khớp exact-substring (không chuẩn hoá) sẽ loại bỏ nhầm các quote ĐÚNG
-    này, làm rỗng oan emotion_flagged_segments/pause_points trong thực tế
-    (chapter text luôn có xuống dòng tự nhiên)."""
-    return _WHITESPACE_RE.sub(" ", text).strip()
-
-
 def _filter_hallucinated_quotes(items, raw_text):
     """Loại bỏ mọi entry (emotion_flagged_segments/pause_points) có
     quoted_text KHÔNG xuất hiện (sau khi chuẩn hoá khoảng trắng) trong
@@ -233,78 +216,19 @@ def _filter_hallucinated_quotes(items, raw_text):
     quy tắc. Giữ nguyên quoted_text GỐC (không chuẩn hoá) trong kết quả trả
     về — chuẩn hoá chỉ dùng để SO KHỚP, Beta vẫn cần bản gốc để tự định vị
     trong chapter_text của nó."""
-    normalized_raw = _normalize_ws(raw_text)
-    return [item for item in items if _normalize_ws(item.quoted_text) in normalized_raw]
+    normalized_raw = normalize_ws(raw_text)
+    return [item for item in items if normalize_ws(item.quoted_text) in normalized_raw]
 
 
 # ============================================================================
 # Phase 2 cua ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md, muc 7 - "Map-reduce
 # restructure cho tieu thuyet dai". Khi raw_text vuot qua config.ALPHA_WINDOW_CHARS,
-# chia thanh cac cua so chong lan, goi Alpha rieng cho tung cua so, roi gop
-# (reduce) ket qua ve global. Khi raw_text VUA VAN trong 1 cua so (truong hop
-# pho bien, da kiem chung qua Phase 0/1), _split_into_windows() tra ve DUNG 1
-# cua so = toan bo van ban - hanh vi giong het truoc Phase 2, khong thay doi.
+# chia thanh cac cua so chong lan (voxdirector/text_utils.py::split_into_windows),
+# goi Alpha rieng cho tung cua so, roi gop (reduce) ket qua ve global. Khi
+# raw_text VUA VAN trong 1 cua so (truong hop pho bien, da kiem chung qua
+# Phase 0/1), split_into_windows() tra ve DUNG 1 cua so = toan bo van ban -
+# hanh vi giong het truoc Phase 2, khong thay doi.
 # ============================================================================
-
-_PARAGRAPH_BREAK_SNAP_RADIUS = 500
-
-
-def _snap_to_paragraph_break(text: str, pos: int) -> int:
-    """Dich pos ve diem ngat doan (\\n\\n) gan nhat trong ban kinh
-    _PARAGRAPH_BREAK_SNAP_RADIUS ky tu, uu tien ben nao gan hon - tranh cat 1
-    cua so giua chung 1 cau/1 tieu de chuong, co the khien Gemini hieu sai
-    ranh gioi ngay tai diem cat. Neu khong tim thay "\\n\\n" nao trong ban
-    kinh, thu "\\n" don; neu van khong co, giu nguyen pos (cat cung, chi xay
-    ra voi van ban khong co doan xuong dong ro rang nao gan do)."""
-    lo = max(0, pos - _PARAGRAPH_BREAK_SNAP_RADIUS)
-    hi = min(len(text), pos + _PARAGRAPH_BREAK_SNAP_RADIUS)
-
-    def _closest(token: str) -> Optional[int]:
-        before = text.rfind(token, lo, pos)
-        after = text.find(token, pos, hi)
-        candidates = []
-        if before != -1:
-            candidates.append((pos - (before + len(token)), before + len(token)))
-        if after != -1:
-            candidates.append((after - pos, after))
-        if not candidates:
-            return None
-        return min(candidates, key=lambda t: t[0])[1]
-
-    # KHONG dung "or" de noi chuoi fallback - _closest() co the tra ve 0 (1
-    # vi tri hop le that su, vd. diem ngat doan nam dung dau ban kinh tim
-    # kiem), "0 or X" se sai lam roi qua nhanh X vi Python coi 0 la falsy.
-    double_break = _closest("\n\n")
-    if double_break is not None:
-        return double_break
-    single_break = _closest("\n")
-    if single_break is not None:
-        return single_break
-    return pos
-
-
-def _split_into_windows(raw_text: str, window_chars: int, overlap_chars: int) -> list[tuple[int, int]]:
-    """Chia raw_text thanh danh sach (start, end) chong lan overlap_chars ky
-    tu giua 2 cua so lien tiep. text_len <= window_chars -> tra ve DUNG 1 cua
-    so bao trum toan bo van ban (khong windowing gi ca)."""
-    text_len = len(raw_text)
-    if text_len <= window_chars:
-        return [(0, text_len)]
-
-    windows = []
-    start = 0
-    while True:
-        end = min(start + window_chars, text_len)
-        if end < text_len:
-            end = _snap_to_paragraph_break(raw_text, end)
-        windows.append((start, end))
-        if end >= text_len:
-            break
-        next_start = end - overlap_chars
-        if next_start <= start:  # phong ngua cau hinh sai (overlap >= window) gay vong lap vo han
-            next_start = end
-        start = next_start
-    return windows
 
 
 def _reconcile_chapters(
@@ -364,12 +288,12 @@ _PUNCT_STRIP_RE = re.compile(r"[^\w\s]", re.UNICODE)
 
 def _normalize_for_fuzzy_compare(text: str) -> str:
     """Chuan hoa RIENG cho so sanh do tuong dong (Phase 2 muc 9) - bo dau
-    cau (,.!?"'... ) ngoai viec gop khoang trang + ha chu nhu _normalize_ws(),
+    cau (,.!?"'... ) ngoai viec gop khoang trang + ha chu nhu normalize_ws() (voxdirector/text_utils.py),
     vi Gemini dien giai lai thuong doi/them/bot dau cau ma khong doi noi
     dung - khong nen bi tinh la khac biet. CHI dung de tinh ty le tuong
     dong, KHONG dung ham nay cho gia tri quoted_text tra ve (van phai la
     nguyen van tu window_text, giu dau cau that)."""
-    return _WHITESPACE_RE.sub(" ", _PUNCT_STRIP_RE.sub("", text.lower())).strip()
+    return normalize_ws(_PUNCT_STRIP_RE.sub("", text.lower()))
 
 
 def _sliding_word_candidates(text: str, target_word_count: int) -> list[str]:
@@ -380,7 +304,7 @@ def _sliding_word_candidates(text: str, target_word_count: int) -> list[str]:
     ngan voi ca 1 cau dai se luon ra ty le thap du noi dung that ra khop
     tot). Ghep lai bang " ".join() (khong giu nguyen xuong dong/khoang
     trang goc) la CO CHU DICH - ket qua van la 1 chuoi con hop le cua
-    _normalize_ws(text) (xem docstring _find_best_fuzzy_match), du la tat
+    normalize_ws(text) (xem docstring _find_best_fuzzy_match), du la tat
     ca nhung gi cac ham so khop ha nguon (_items_for_chapter, Beta) can."""
     words = text.split()
     if not words:
@@ -439,9 +363,9 @@ def _filter_and_rescue_quotes(items, window_text: str):
     Gemini dien giai lai luon nam VAT LY GAN noi no dang doc trong cua so
     nay, khong phai trung ngau nhien voi 1 cau o chuong khac."""
     kept = []
-    normalized_window = _normalize_ws(window_text)
+    normalized_window = normalize_ws(window_text)
     for item in items:
-        if _normalize_ws(item.quoted_text) in normalized_window:
+        if normalize_ws(item.quoted_text) in normalized_window:
             kept.append(item)
             continue
         rescued_text = _find_best_fuzzy_match(item.quoted_text, window_text)
@@ -450,25 +374,11 @@ def _filter_and_rescue_quotes(items, window_text: str):
     return kept
 
 
-def _dedupe_by_quoted_text(items):
-    """Loai bo item TRUNG LAP CHINH XAC (cung quoted_text sau chuan hoa) -
-    xay ra khi 2 cua so chong lan cung nhin thay VA gan co CUNG 1 cau trong
-    vung overlap. Giu ban co confidence_score cao hon; thu tu ket qua theo
-    lan xuat hien DAU TIEN (khong quan trong cho _items_for_chapter ve sau)."""
-    best_by_text = {}
-    for item in items:
-        key = _normalize_ws(item.quoted_text)
-        existing = best_by_text.get(key)
-        if existing is None or item.confidence_score > existing.confidence_score:
-            best_by_text[key] = item
-    return list(best_by_text.values())
-
-
 def run_alpha(raw_text: str, api_key: str | None = None) -> dict:
     """Chạy Alpha cho toàn bộ raw_text — Section 6.1 của spec: "Runs once
     per submission, before Beta" khi văn bản vừa trong 1 cửa sổ (trường hợp
     phổ biến, đã kiểm chứng Phase 0/1); Phase 2 (map-reduce, xem
-    _split_into_windows() ở trên) khi văn bản vượt quá
+    split_into_windows() (voxdirector/text_utils.py)) khi văn bản vượt quá
     config.ALPHA_WINDOW_CHARS — vẫn 1 lệnh gọi LLM MỖI cửa sổ, không phải
     gọi lặp lại tuỳ ý. Trả về dict đúng schema đầy đủ: chapters,
     detected_genre, suggested_voice_id, genre_confidence_score,
@@ -496,7 +406,7 @@ def run_alpha(raw_text: str, api_key: str | None = None) -> dict:
             "target_audience": None,
         }
 
-    windows = _split_into_windows(raw_text, ALPHA_WINDOW_CHARS, ALPHA_WINDOW_OVERLAP_CHARS)
+    windows = split_into_windows(raw_text, ALPHA_WINDOW_CHARS, ALPHA_WINDOW_OVERLAP_CHARS)
 
     per_window_results: list[AlphaOutput] = []
     per_window_chapters: list[list[ChapterBoundary]] = []
@@ -555,10 +465,10 @@ def run_alpha(raw_text: str, api_key: str | None = None) -> dict:
     # chac chan cung xuat hien trong raw_text - nhung re, vo hai, va giu dung
     # tinh than "khong tin tuyet doi vao 1 buoc duy nhat" cua _clamp_and_sort()).
     emotion_segments = _filter_hallucinated_quotes(
-        _dedupe_by_quoted_text(global_emotion_segments), raw_text,
+        dedupe_by_key(global_emotion_segments, key_fn=lambda i: normalize_ws(i.quoted_text)), raw_text,
     )
     pause_points = _filter_hallucinated_quotes(
-        _dedupe_by_quoted_text(global_pause_points), raw_text,
+        dedupe_by_key(global_pause_points, key_fn=lambda i: normalize_ws(i.quoted_text)), raw_text,
     )
 
     return {

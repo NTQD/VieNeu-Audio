@@ -94,6 +94,18 @@ PAUSE_LONG_DURATION_MS = 1400
 ALPHA_WINDOW_CHARS = int(os.environ.get("VOXDIRECTOR_ALPHA_WINDOW_CHARS", "30000"))
 ALPHA_WINDOW_OVERLAP_CHARS = int(os.environ.get("VOXDIRECTOR_ALPHA_WINDOW_OVERLAP_CHARS", "3000"))
 
+# Phase 3 cua ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md ("Beta: chunk
+# oversized chapters") - CO CHU DICH nho hon ALPHA_WINDOW_CHARS: tran nhan
+# thuc that su cua Beta chat hon Alpha nhieu - Beta phai ECHO LAI GAN NHU
+# TOAN BO chapter_text trong corrected_text (Alpha chi tra ve index/trich
+# dan ngan), nen output token can dung TI LE THUAN voi input, khong chi
+# vai chuc index nhu Alpha. Chua tung duoc kiem chung voi 1 chuong that su
+# dai - GIA TRI TAM THOI, CHUA CHOT, giong tinh than ALPHA_WINDOW_CHARS o
+# tren. chapter_text <= nguong nay -> DUNG 1 chunk (= toan bo chuong) -
+# hanh vi giong het truoc Phase 3, khong thay doi cho chuong ngan/binh
+# thuong da kiem chung qua Phase 0-2.
+BETA_CHUNK_CHARS = int(os.environ.get("VOXDIRECTOR_BETA_CHUNK_CHARS", "12000"))
+
 # TTS engine (2026-09-11: dao nguoc quyet dinh dung Piper, quay lai
 # VieNeu-TTS). GHIM CHINH XAC version, khong dung constraint long (>=) - xac
 # nhan co THAT (2026-09-11): venv CHUNG cua repo nay co san 1 ban `vieneu`

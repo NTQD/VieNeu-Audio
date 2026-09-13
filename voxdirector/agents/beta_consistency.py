@@ -16,17 +16,20 @@ lúc import — cùng cơ chế config-driven với alpha_ingestion.py: đổi l
 chỉ cần sửa JSON, không sửa code.
 """
 
+import difflib
 from typing import Literal, Optional
 
 from pydantic import BaseModel
 
 from voxdirector.config import (
+    BETA_CHUNK_CHARS,
     PAUSE_LONG_TOKEN,
     load_emotion_lexicon,
 )
 from voxdirector.glossary.schema import GlossaryEntry
 from voxdirector.glossary.store import add_entry, query_glossary
 from voxdirector.llm_client import call_structured
+from voxdirector.text_utils import dedupe_by_key, items_for_span, split_into_windows
 
 _emotion_lexicon = load_emotion_lexicon()
 _EMOTION_KEYS = tuple(k for k in _emotion_lexicon if not k.startswith("_"))
@@ -150,6 +153,34 @@ def _build_user_content(
     )
 
 
+def compute_diff_ops(original: str, corrected: str) -> list[dict]:
+    """Phase 3 cua ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md, muc 12 -
+    "diff view": so sanh original (chapter_text TRUOC Beta) va corrected
+    (corrected_text SAU Beta) o MUC TU (khong phai ky tu - diff ky tu qua
+    vun/kho doc voi van xuoi) bang difflib.SequenceMatcher.get_opcodes()
+    (stdlib, cung thu vien da dung cho fuzzy-match o Phase 2, khong them
+    dependency moi). Tra ve list {"op": "equal"|"delete"|"insert", "text":
+    str} theo dung thu tu doc - "delete" chi co trong original, "insert"
+    chi co trong corrected, 1 opcode "replace" cua difflib duoc tach thanh
+    1 cap delete-roi-insert lien tiep de frontend khong can biet gi ve khai
+    niem "replace" rieng."""
+    original_tokens = original.split(" ")
+    corrected_tokens = corrected.split(" ")
+    matcher = difflib.SequenceMatcher(None, original_tokens, corrected_tokens, autojunk=False)
+    ops = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            ops.append({"op": "equal", "text": " ".join(original_tokens[i1:i2])})
+        elif tag == "delete":
+            ops.append({"op": "delete", "text": " ".join(original_tokens[i1:i2])})
+        elif tag == "insert":
+            ops.append({"op": "insert", "text": " ".join(corrected_tokens[j1:j2])})
+        elif tag == "replace":
+            ops.append({"op": "delete", "text": " ".join(original_tokens[i1:i2])})
+            ops.append({"op": "insert", "text": " ".join(corrected_tokens[j1:j2])})
+    return ops
+
+
 def run_beta(
     chapter_text: str,
     emotion_flagged_segments: list[dict] | None = None,
@@ -157,7 +188,13 @@ def run_beta(
     chapter_number: int = 0,
     api_key: str | None = None,
 ) -> dict:
-    """Chạy Beta trên 1 chương — 1 lệnh gọi LLM duy nhất, 3 pass đồng thời.
+    """Chạy Beta trên 1 chương. Chương vừa trong 1 lần gọi (trường hợp phổ
+    biến, đã kiểm chứng Phase 0-2) → đúng 1 lệnh gọi LLM, 3 pass đồng thời,
+    hành vi giống hệt trước Phase 3. Chương vượt quá config.BETA_CHUNK_CHARS
+    (Phase 3 mục 11) → chia thành các chunk KHÔNG chồng lấn
+    (`split_into_windows(..., overlap_chars=0)` — Beta không cần ngữ cảnh
+    chồng lấn như Alpha, chỉ cần không cắt giữa câu), mỗi chunk 1 lệnh gọi
+    riêng, rồi ghép corrected_text theo thứ tự và gộp các list khác.
 
     emotion_flagged_segments và pause_points thường lấy từ output Alpha
     (run_alpha()['emotion_flagged_segments'] và ['pause_points']); mặc định
@@ -168,17 +205,69 @@ def run_beta(
     emotion_flagged_segments = emotion_flagged_segments or []
     pause_points = pause_points or []
 
+    chunks = split_into_windows(chapter_text, BETA_CHUNK_CHARS, overlap_chars=0)
+    # Truy van glossary 1 LAN DUY NHAT tren toan bo chapter_text (khong phai
+    # tung chunk rieng) - Phase 3 muc 11: "sharing glossary context across
+    # sub-chunks", giu 1 goc nhin nhat quan ve glossary ben vung xuyen suot
+    # ca chuong thay vi N lan truy van embedding doc lap co the lech nhau.
     glossary_context = query_glossary(chapter_text)
-    user_content = _build_user_content(
-        chapter_text,
-        glossary_context,
-        emotion_flagged_segments,
-        pause_points,
-        _emotion_lexicon,
-        PAUSE_LONG_TOKEN,
-    )
-    result: BetaOutput = call_structured(SYSTEM_PROMPT, user_content, BetaOutput, api_key=api_key)
-    return result.model_dump()
+
+    corrected_parts = []
+    all_applied_terms: list[AppliedTerm] = []
+    all_new_entry_candidates: list[NewEntryCandidate] = []
+    all_expression_report: list[ExpressionReportItem] = []
+    all_pause_report: list[PauseReportItem] = []
+    # Thuat ngu Beta da AP DUNG (khop voi glossary ben vung) o cac chunk
+    # TRUOC do - chuyen tiep sang chunk SAU nhu glossary_context bo sung, de
+    # 1 ten rieng duoc chinh o chunk 1 van duoc chunk 2 nhin thay dung dang
+    # chuan, ke ca khi truy van embedding rieng cua chunk 2 khong tu tim ra
+    # no manh. Day la co che CU THE dang sau "sharing context" cua muc 11.
+    carried_terms: list[dict] = []
+
+    for c_start, c_end in chunks:
+        chunk_text = chapter_text[c_start:c_end]
+        chunk_emotions = items_for_span(emotion_flagged_segments, chunk_text)
+        chunk_pauses = items_for_span(pause_points, chunk_text)
+        chunk_glossary_context = glossary_context + carried_terms
+
+        user_content = _build_user_content(
+            chunk_text,
+            chunk_glossary_context,
+            chunk_emotions,
+            chunk_pauses,
+            _emotion_lexicon,
+            PAUSE_LONG_TOKEN,
+        )
+        result: BetaOutput = call_structured(SYSTEM_PROMPT, user_content, BetaOutput, api_key=api_key)
+
+        corrected_parts.append(result.corrected_text)
+        all_applied_terms.extend(result.applied_terms)
+        all_new_entry_candidates.extend(result.new_entry_candidates)
+        all_expression_report.extend(result.expression_report)
+        all_pause_report.extend(result.pause_report)
+        carried_terms.extend(
+            {
+                "original_term": t.original,
+                "canonical_form": t.canonical_form,
+                "entity_type": "term",
+            }
+            for t in result.applied_terms
+        )
+
+    corrected_text = "\n\n".join(corrected_parts)
+    # Dedup cung ly do voi Phase 2 (Alpha new_entry_candidates qua nhieu
+    # cua so): cung 1 ten moi co the duoc de xuat lai o nhieu chunk cua
+    # cung 1 chuong, nguoi dung chi can duyet 1 lan cho 1 ten.
+    deduped_candidates = dedupe_by_key(all_new_entry_candidates, key_fn=lambda c: c.term)
+
+    return {
+        "corrected_text": corrected_text,
+        "applied_terms": [t.model_dump() for t in all_applied_terms],
+        "new_entry_candidates": [c.model_dump() for c in deduped_candidates],
+        "expression_report": [r.model_dump() for r in all_expression_report],
+        "pause_report": [r.model_dump() for r in all_pause_report],
+        "diff_ops": compute_diff_ops(chapter_text, corrected_text),
+    }
 
 
 def approve_new_entries(candidates: list[dict], chapter_number: int | None = None) -> None:

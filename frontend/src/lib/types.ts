@@ -84,6 +84,21 @@ export interface PauseReportItem {
   skipped_reason: string | null;
 }
 
+// Phase 3 cua ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md, muc 12 ("diff
+// view") - khop compute_diff_ops() trong voxdirector/agents/beta_consistency.py.
+// "delete" chi xuat hien trong chapter_text goc, "insert" chi xuat hien
+// trong corrected_text - render lien tiep theo dung thu tu mang la ra dung
+// doan van cuoi cung (sau Beta).
+export interface DiffOp {
+  op: "equal" | "delete" | "insert";
+  text: string;
+}
+
+export interface ChapterDiff {
+  chapter: number;
+  diff_ops: DiffOp[];
+}
+
 // 2026-09-13 - phan bo thoi gian tung giai doan (giay), de tra loi cau hoi
 // "GPU co that su nhanh hon khong" bang so lieu thuc te thay vi doan: alpha/
 // beta la Gemini API (KHONG lien quan GPU), tts_s la CHI RIENG luc goi
@@ -109,6 +124,7 @@ export interface ResultMessage {
   new_term_candidates: NewTermCandidate[];
   expression_report: ExpressionReportItem[];
   pause_report: PauseReportItem[];
+  chapter_diffs: ChapterDiff[];
   // 2026-09-12 - thoi gian THAT (giay) toan bo pipeline mat de xu ly xong job
   // nay (Alpha + Beta/TTS/ghep/video/QA) - xem backend/app/main.py:ws_progress().
   processing_time_s: number;

@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import SegmentList from "./SegmentList";
 import AudioPlayerBar from "./AudioPlayerBar";
 import BetaActivityPanel from "./BetaActivityPanel";
+import DiffView from "./DiffView";
 import type { ResultMessage, TimingBreakdown } from "@/lib/types";
 import { API_BASE_URL, rerenderSegment } from "@/lib/api";
 
@@ -131,6 +132,8 @@ export default function ResultView({ result, qaEnabled, jobId }: Props) {
       )}
 
       <BetaActivityPanel expressionReport={result.expression_report} pauseReport={result.pause_report} />
+
+      <DiffView diffs={result.chapter_diffs} />
 
       <SegmentList
         segments={result.segments}
