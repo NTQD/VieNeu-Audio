@@ -66,6 +66,25 @@ WHISPER_DEVICE = os.environ.get("VOXDIRECTOR_WHISPER_DEVICE") or detect_device()
 WHISPER_COMPUTE_TYPE = os.environ.get("VOXDIRECTOR_WHISPER_COMPUTE_TYPE", "int8")
 WER_PASS_THRESHOLD = 0.08
 
+# Phase 4 cua ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md ("Gamma: tu bao
+# cao den tu sua loi"). GIA TRI TAM THOI, CHUA CHOT (giong tinh than
+# ALPHA_WINDOW_CHARS/BETA_CHUNK_CHARS) - hieu chuan that su can bo eval set
+# co cham diem nguoi that (data/eval_set/, hien con rong - xem README o do),
+# chua the lam ngay; 3 hang so nay lam cho nguong gan co MINH BACH VA CHINH
+# SUA DUOC qua env var, thay vi 1.5 nam cung trong code nhu truoc.
+#
+# GAMMA_FLAG_CUTOFF_MULTIPLIER: 1 chunk bi gan co neu WER > overall_wer *
+# he so nay (giu nguyen 1.5 da dung tu truoc, chi rut ra thanh config).
+# GAMMA_WORD_CONFIDENCE_THRESHOLD: bat ky tu nao ASR bao do tin cay
+# (probability, tu faster-whisper word_timestamps) duoi nguong nay cung
+# khien chunk bi gan co - NGAY CA KHI WER tong the van chap nhan duoc (1 tu
+# nuot mat co the khong lam WER tong the vuot nguong neu chunk du dai).
+# GAMMA_MAX_RETRIES: so lan tu dong tong hop lai toi da cho 1 chunk bi gan
+# co truoc khi chiu thua va de nguoi dung tu render lai thu cong.
+GAMMA_FLAG_CUTOFF_MULTIPLIER = float(os.environ.get("VOXDIRECTOR_GAMMA_FLAG_CUTOFF_MULTIPLIER", "1.5"))
+GAMMA_WORD_CONFIDENCE_THRESHOLD = float(os.environ.get("VOXDIRECTOR_GAMMA_WORD_CONFIDENCE_THRESHOLD", "0.35"))
+GAMMA_MAX_RETRIES = int(os.environ.get("VOXDIRECTOR_GAMMA_MAX_RETRIES", "2"))
+
 # Sentinel dùng bởi Alpha (đánh dấu điểm cần ngắt kịch tính dài) + Beta (chèn
 # vào text) + text_splitter.py (ép làm ranh giới chunk) + audio_postprocess.py
 # (áp khoảng lặng dài tại đó) — Section 7.2 của spec. Đây LÀ hằng số kỹ thuật

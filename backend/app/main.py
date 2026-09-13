@@ -532,27 +532,55 @@ async def ws_progress(websocket: WebSocket, job_id: str):
                 "type": "progress", "stage": "qa", "label": STAGES[4]["label"],
                 "stage_index": 4, "total_stages": len(STAGES),
             })
-            from voxdirector.agents.gamma_qa import verify_chapter_quality
-            # QA tren TUNG chuong (verify_chapter_quality yeu cau chapter_dir
-            # rieng) - gop lai thanh 1 bao cao tong cho ca job.
+            # Phase 4 cua ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md, muc
+            # 13 - verify_and_retry_chapter_quality() (orchestrator.py) tu
+            # dong thu tong hop lai cac chunk bi gan co truoc khi bao cao,
+            # thay vi chi bao "nghi ngo loi" roi cho nguoi dung tu render lai.
+            from voxdirector.orchestrator import verify_and_retry_chapter_quality
+            # QA tren TUNG chuong (verify_and_retry_chapter_quality yeu cau
+            # chapter_dir rieng) - gop lai thanh 1 bao cao tong cho ca job.
             _qa_start = time.monotonic()
             all_flagged = []
             wers = []
+            segments_retried_total = 0
+            segments_fixed_total = 0
+            any_chapter_changed = False
             for ci, result in enumerate(chapter_results):
                 chapter_dir = str(job_dir / f"chapter_{ci + 1}")
                 r = await asyncio.to_thread(
-                    verify_chapter_quality, chapter_dir, f"chapter_{ci + 1}", result["chunks"],
+                    verify_and_retry_chapter_quality, chapter_dir, f"chapter_{ci + 1}", result["chunks"],
                 )
                 wers.append(r["word_error_rate"])
                 for f in r["flagged_segments"]:
                     f["chapter"] = ci + 1
                     all_flagged.append(f)
+                retry_summary = r["auto_retry_summary"]
+                segments_retried_total += retry_summary["segments_retried"]
+                segments_fixed_total += retry_summary["segments_fixed"]
+                if retry_summary["segments_retried"] > 0:
+                    any_chapter_changed = True
             qa_duration_s = time.monotonic() - _qa_start
+
+            # assemble_final_audio() da chay 1 lan TRUOC khoi QA nay (xem
+            # ben tren) - neu retry vua ghi de {prefix}_merged.wav cua bat ky
+            # chuong nao, final.wav cu se KHONG con phan anh dung audio da
+            # sua, dung y het loi "nut Render lai khong hoat dong" ma chinh
+            # assemble_final_audio() da tung fix mot lan (xem docstring ham
+            # do) - phai goi lai o day.
+            if any_chapter_changed:
+                await asyncio.to_thread(
+                    assemble_final_audio, str(job_dir), len(chapter_results), sample_rate, final_audio_path,
+                )
+
             qa_report = {
                 "word_error_rate": round(sum(wers) / len(wers), 2) if wers else 0.0,
                 "passed": all(w < 0.08 for w in wers) if wers else True,
                 "flagged_segments_count": len(all_flagged),
                 "flagged_segments": all_flagged,
+                "auto_retry_summary": {
+                    "segments_retried": segments_retried_total,
+                    "segments_fixed": segments_fixed_total,
+                },
             }
             # Section 5d cua PHASE0_HANDOFF.md - summarize_qa_report() da viet
             # san (voxdirector/agents/gamma_qa.py) nhung chua tung duoc goi;

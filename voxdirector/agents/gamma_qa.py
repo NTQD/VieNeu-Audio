@@ -14,6 +14,8 @@ dùng để tóm tắt các con số ĐÃ tính sẵn thành 1 đoạn báo cáo
 import os
 
 from voxdirector.config import (
+    GAMMA_FLAG_CUTOFF_MULTIPLIER,
+    GAMMA_WORD_CONFIDENCE_THRESHOLD,
     WER_PASS_THRESHOLD,
     WHISPER_COMPUTE_TYPE,
     WHISPER_DEVICE,
@@ -57,17 +59,40 @@ def _get_model():
 
 def verify_audio_quality(audio_path: str, original_text: str) -> dict:
     """ASR round-trip cho 1 file audio: transcribe rồi so với original_text
-    bằng Word Error Rate. Trả về {"word_error_rate", "transcript", "passed"}.
-    """
+    bằng Word Error Rate. Trả về {"word_error_rate", "transcript", "passed",
+    "low_confidence_words"}.
+
+    Phase 4 muc 14 - bat word_timestamps=True (TRUOC ban sua nay KHONG bat,
+    xac nhan qua doc truc tiep signature cua faster_whisper - nghia la du
+    lieu do tin cay tung tu CHUA TUNG duoc tinh, khong phai "da tinh nhung
+    bi bo qua" nhu master plan mo ta) de lay probability tung tu
+    (faster_whisper.transcribe.Word: start/end/word/probability). Tu nao co
+    probability duoi GAMMA_WORD_CONFIDENCE_THRESHOLD duoc gom vao
+    low_confidence_words - cho phep khoanh vung DUNG TU nghi ngo nuot am,
+    khong chi bao "ca doan nay co the sai" nhu truoc."""
     import jiwer
 
     model = _get_model()
-    segments, _ = model.transcribe(audio_path, language="vi")
+    segments = list(model.transcribe(audio_path, language="vi", word_timestamps=True)[0])
     transcript = " ".join(seg.text for seg in segments)
     wer = jiwer.wer(original_text, transcript)
+
+    low_confidence_words = [
+        {
+            "word": w.word.strip(),
+            "start": round(w.start, 2),
+            "end": round(w.end, 2),
+            "probability": round(w.probability, 3),
+        }
+        for seg in segments
+        for w in (seg.words or [])
+        if w.probability < GAMMA_WORD_CONFIDENCE_THRESHOLD
+    ]
+
     return {
         "word_error_rate": wer, "transcript": transcript,
         "passed": wer < WER_PASS_THRESHOLD,
+        "low_confidence_words": low_confidence_words,
     }
 
 
@@ -92,24 +117,35 @@ def verify_chapter_quality(chapter_dir: str, prefix: str, chunks: list[str]) -> 
     overall = verify_audio_quality(audio_path, full_text)
 
     flagged = []
-    flag_cutoff = max(overall["word_error_rate"] * 1.5, WER_PASS_THRESHOLD)
+    flag_cutoff = max(overall["word_error_rate"] * GAMMA_FLAG_CUTOFF_MULTIPLIER, WER_PASS_THRESHOLD)
     for i, chunk_text in enumerate(chunks):
         part_path = os.path.join(chapter_dir, f"{prefix}_p{i + 1:02d}.wav")
         if not os.path.isfile(part_path):
             continue
         part_result = verify_audio_quality(part_path, chunk_text)
-        if part_result["word_error_rate"] > flag_cutoff:
+        # Phase 4 muc 13/15 - gan co neu WER vuot nguong (nhu truoc) HOAC neu
+        # co bat ky tu nao ASR bao do tin cay thap - 1 tu nuot mat co the
+        # khong lam WER TONG THE cua ca chunk vuot nguong neu chunk du dai,
+        # nen chi dua vao WER se BO SOT chinh loi "nuot tu ngau nhien" ma
+        # tinh nang nay duoc yeu cau giai quyet.
+        if part_result["word_error_rate"] > flag_cutoff or part_result["low_confidence_words"]:
             flagged.append({
                 "segment_index": i,
                 "original_text": chunk_text,
                 "asr_transcript": part_result["transcript"],
                 "deviation_score": round(part_result["word_error_rate"], 2),
+                "low_confidence_words": part_result["low_confidence_words"],
             })
 
     return {
         "word_error_rate": round(overall["word_error_rate"], 2),
         "passed": overall["passed"],
         "flagged_segments": flagged,
+        # Phase 4 - phoi bay nguong that su dung de gan co, de
+        # orchestrator.retry_flagged_segment() dung LAI DUNG nguong nay khi
+        # danh gia 1 ban thu lai co "du tot" hay chua, thay vi tinh lai
+        # cong thuc 1 lan nua o noi khac (de lech neu sua 1 cho quen cho kia).
+        "flag_cutoff": round(flag_cutoff, 3),
     }
 
 

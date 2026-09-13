@@ -125,6 +125,12 @@ export default function ResultView({ result, qaEnabled, jobId }: Props) {
             WER: {(result.quality_summary.word_error_rate * 100).toFixed(1)}% —{" "}
             {result.quality_summary.flagged_segments_count} đoạn bị đánh dấu nghi ngờ.
           </p>
+          {!!result.quality_summary.auto_retry_summary?.segments_retried && (
+            <p className="text-xs text-jade">
+              Tự động thử lại {result.quality_summary.auto_retry_summary.segments_retried} đoạn, đã sửa
+              được {result.quality_summary.auto_retry_summary.segments_fixed} đoạn.
+            </p>
+          )}
           {result.quality_summary.summary && (
             <p className="text-xs text-muted-foreground">{result.quality_summary.summary}</p>
           )}

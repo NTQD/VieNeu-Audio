@@ -324,26 +324,33 @@ def assemble_final_audio(
     return final_audio_path
 
 
-def rerender_chunk(chapter_dir: str, chunk_index: int) -> str:
-    """Section 11 Step 10 cua spec ("Segment re-render endpoint") - tong hop
-    lai DUNG 1 chunk (segment) da chon tu manifest da luu, roi ghep lai
-    toan bo chuong voi cac phan con lai giu nguyen (khong tong hop lai tu
-    dau ca chuong). Tra ve merged_path da cap nhat."""
-    from pipeline.audio_postprocess import concat_with_variable_silence, durations_from_boundary_flags, get_ffmpeg
-    from pipeline.punctuation_pauses import split_chunk_by_punctuation
-    from pipeline.vieneu_tts import synthesize_to_file
-
+def _load_chapter_manifest(chapter_dir: str) -> dict:
+    """Doc file {prefix}_manifest.json cua 1 chuong - dung chung boi
+    rerender_chunk()/_resynthesize_chunk_audio()/_rebuild_chapter_merged_audio()
+    (Phase 4), tranh doc lai code tim+parse file nay o nhieu noi."""
     manifest_candidates = [f for f in os.listdir(chapter_dir) if f.endswith("_manifest.json")]
     if not manifest_candidates:
         raise FileNotFoundError(f"Không tìm thấy manifest trong {chapter_dir}")
     manifest_path = os.path.join(chapter_dir, manifest_candidates[0])
     with open(manifest_path, "r", encoding="utf-8") as f:
-        manifest = json.load(f)
+        return json.load(f)
 
+
+def _resynthesize_chunk_audio(chapter_dir: str, chunk_index: int) -> str:
+    """Tong hop lai DUNG 1 chunk (segment) tu manifest da luu - tach ra tu
+    rerender_chunk() (Phase 4 cua ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md,
+    muc 13) de retry_flagged_segment() co the goi lai NHIEU LAN ma KHONG phai
+    ghep lai toan bo audio chuong sau MOI lan thu (chi can ghep 1 lan duy
+    nhat sau khi da chon duoc ban tot nhat - xem _rebuild_chapter_merged_audio()).
+    Tra ve chunk_path da ghi de."""
+    from pipeline.audio_postprocess import concat_with_variable_silence, get_ffmpeg
+    from pipeline.punctuation_pauses import split_chunk_by_punctuation
+    from pipeline.vieneu_tts import synthesize_to_file
+
+    manifest = _load_chapter_manifest(chapter_dir)
     prefix = manifest["prefix"]
     voice_id = manifest["voice_id"]
     chunks = manifest["chunks"]
-    boundary_flags = manifest["boundary_flags"]
     sample_rate = manifest["sample_rate"]
 
     if not (0 <= chunk_index < len(chunks)):
@@ -367,6 +374,24 @@ def rerender_chunk(chapter_dir: str, chunk_index: int) -> str:
         for p in piece_paths:
             os.remove(p)
 
+    return chunk_path
+
+
+def _rebuild_chapter_merged_audio(chapter_dir: str) -> str:
+    """Ghep lai {prefix}_merged.wav tu TAT CA cac file {prefix}_p{NN}.wav
+    hien co - tach ra tu rerender_chunk() (Phase 4, muc 13), goi 1 LAN DUY
+    NHAT sau khi 1 hoac nhieu chunk da duoc _resynthesize_chunk_audio() cap
+    nhat, thay vi ghep lai sau MOI lan thu rieng le (rerender_chunk() van
+    goi ham nay 1 lan/loi goi, giu dung hanh vi cu cho /api/rerender)."""
+    from pipeline.audio_postprocess import concat_with_variable_silence, durations_from_boundary_flags, get_ffmpeg
+
+    manifest = _load_chapter_manifest(chapter_dir)
+    prefix = manifest["prefix"]
+    chunks = manifest["chunks"]
+    boundary_flags = manifest["boundary_flags"]
+    sample_rate = manifest["sample_rate"]
+
+    ffmpeg = get_ffmpeg()
     part_paths = [os.path.join(chapter_dir, f"{prefix}_p{i + 1:02d}.wav") for i in range(len(chunks))]
     chunk_silences = durations_from_boundary_flags(
         boundary_flags, manifest["pause_duration_ms_default"] / 1000.0,
@@ -379,3 +404,140 @@ def rerender_chunk(chapter_dir: str, chunk_index: int) -> str:
         concat_with_variable_silence(ffmpeg, part_paths, chunk_silences, merged_path, sample_rate=sample_rate)
 
     return merged_path
+
+
+def rerender_chunk(chapter_dir: str, chunk_index: int) -> str:
+    """Section 11 Step 10 cua spec ("Segment re-render endpoint") - tong hop
+    lai DUNG 1 chunk (segment) da chon tu manifest da luu, roi ghep lai
+    toan bo chuong voi cac phan con lai giu nguyen (khong tong hop lai tu
+    dau ca chuong). Tra ve merged_path da cap nhat.
+
+    Phase 4 - than ham nay gio la 2 buoc tach rieng (xem
+    _resynthesize_chunk_audio()/_rebuild_chapter_merged_audio()) de
+    retry_flagged_segment() dung lai duoc buoc dau ma khong phai ghep lai
+    ca chuong sau moi lan thu - hanh vi cua CHINH ham nay (dung cho
+    /api/rerender) khong doi."""
+    _resynthesize_chunk_audio(chapter_dir, chunk_index)
+    return _rebuild_chapter_merged_audio(chapter_dir)
+
+
+def _segment_acceptable(result: dict, flag_cutoff: float) -> bool:
+    """1 ban tong hop duoc coi la 'du tot' (Phase 4 muc 13/15) neu dat CA
+    HAI tieu chi gan co cua verify_chapter_quality(): WER trong nguong VA
+    khong co tu nao bi bao do tin cay thap - chi dua vao WER se BO SOT
+    dung truong hop 1 tu nuot mat khong lam WER tong the vuot nguong."""
+    return result["word_error_rate"] <= flag_cutoff and not result["low_confidence_words"]
+
+
+def retry_flagged_segment(
+    chapter_dir: str, prefix: str, chunk_index: int, chunk_text: str,
+    current_result: dict, flag_cutoff: float, max_retries: int,
+) -> dict:
+    """Phase 4 cua ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md, muc 13 -
+    "automatic retry-and-pick-best": VieNeu-TTS la stochastic (xac nhan CO
+    THAT qua so sanh hash 2 lan tong hop cung 1 doan text ra 2 file KHAC
+    NHAU, khong phai suy doan) - 1 lan tong hop lai co co hoi that su sua
+    duoc loi nuot tu ngau nhien. Thu lai toi da max_retries lan, GIU LAI
+    ban "tot nhat" trong TAT CA cac lan (ke ca ban goc) - uu tien ban DAT
+    ca 2 tieu chi gan co (xem _segment_acceptable()) truoc, roi moi den WER
+    thap hon lam tieu chi phu - khong phai ban thu CUOI CUNG, vi 1 lan thu
+    co the te hon lan truoc do.
+
+    Sao luu ban goc + tung ban tot hon tim duoc vao thu muc tam, chi copy
+    ban THANG CUOC vao dung vi tri sau khi da thu xong - dam bao file tren
+    dia luon la ban tot nhat da tim duoc, khong bao gio la 1 ban tam thoi
+    te hon trong luc dang thu."""
+    import shutil
+    import tempfile
+
+    part_path = os.path.join(chapter_dir, f"{prefix}_p{chunk_index + 1:02d}.wav")
+    if _segment_acceptable(current_result, flag_cutoff):
+        return {"word_error_rate": current_result["word_error_rate"], "attempts": 0, "fixed": True}
+
+    from voxdirector.agents.gamma_qa import verify_audio_quality
+
+    def _rank(result: dict) -> tuple:
+        return (_segment_acceptable(result, flag_cutoff), -result["word_error_rate"])
+
+    backup_dir = tempfile.mkdtemp(prefix="voxdirector_retry_")
+    try:
+        best_result = current_result
+        best_backup = os.path.join(backup_dir, "original.wav")
+        shutil.copy(part_path, best_backup)
+
+        attempts = 0
+        for i in range(max_retries):
+            _resynthesize_chunk_audio(chapter_dir, chunk_index)
+            attempts += 1
+            candidate = verify_audio_quality(part_path, chunk_text)
+            if _rank(candidate) > _rank(best_result):
+                best_result = candidate
+                best_backup = os.path.join(backup_dir, f"retry_{i}.wav")
+                shutil.copy(part_path, best_backup)
+            if _segment_acceptable(best_result, flag_cutoff):
+                break
+
+        shutil.copy(best_backup, part_path)
+        return {
+            "word_error_rate": best_result["word_error_rate"],
+            "attempts": attempts,
+            "fixed": _segment_acceptable(best_result, flag_cutoff),
+        }
+    finally:
+        shutil.rmtree(backup_dir, ignore_errors=True)
+
+
+def verify_and_retry_chapter_quality(
+    chapter_dir: str, prefix: str, chunks: list[str], max_retries: int | None = None,
+) -> dict:
+    """Phase 4, muc 13 - lop bao boc quanh gamma_qa.verify_chapter_quality():
+    Gamma CHI do luong (khong tu sua gi, dung nguyen triet ly chong
+    hallucination cua no); ham nay o orchestrator.py (noi da so huu
+    rerender_chunk()/assemble_final_audio()) moi la noi thuc su tu dong sua
+    - giu tach biet Agent do luong vs code hanh dong, dung tinh than kien
+    truc hien tai cua du an.
+
+    Chay verify_chapter_quality() 1 lan de biet chunk nao bi gan co, thu lai
+    TUNG chunk do bang retry_flagged_segment(), ghep lai {prefix}_merged.wav
+    DUNG 1 LAN sau cung neu co bat ky thay doi nao, roi do lai WER tong the
+    + loc lai flagged_segments (chi giu chunk VAN CON vuot nguong sau khi da
+    thu). Tra ve them "auto_retry_summary" de nguoi dung biet co bao nhieu
+    doan da duoc tu dong sua."""
+    from voxdirector.agents.gamma_qa import verify_chapter_quality
+    from voxdirector.config import GAMMA_MAX_RETRIES
+
+    if max_retries is None:
+        max_retries = GAMMA_MAX_RETRIES
+
+    initial_report = verify_chapter_quality(chapter_dir, prefix, chunks)
+    initially_flagged = initial_report["flagged_segments"]
+    flag_cutoff = initial_report["flag_cutoff"]
+
+    segments_fixed = 0
+    any_change = False
+    for f in initially_flagged:
+        current_result = {
+            "word_error_rate": f["deviation_score"],
+            "low_confidence_words": f["low_confidence_words"],
+        }
+        result = retry_flagged_segment(
+            chapter_dir, prefix, f["segment_index"], f["original_text"],
+            current_result=current_result,
+            flag_cutoff=flag_cutoff,
+            max_retries=max_retries,
+        )
+        if result["attempts"] > 0:
+            any_change = True
+        if result["fixed"]:
+            segments_fixed += 1
+
+    if not any_change:
+        return {**initial_report, "auto_retry_summary": {"segments_retried": 0, "segments_fixed": 0}}
+
+    _rebuild_chapter_merged_audio(chapter_dir)
+    final_report = verify_chapter_quality(chapter_dir, prefix, chunks)
+    final_report["auto_retry_summary"] = {
+        "segments_retried": len(initially_flagged),
+        "segments_fixed": segments_fixed,
+    }
+    return final_report

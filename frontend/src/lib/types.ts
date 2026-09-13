@@ -65,6 +65,13 @@ export interface QualitySummary {
   // summarize_qa_report() - vang mat khi QA tat (xem fallback trong
   // backend/app/main.py:ws_progress()).
   summary?: string;
+  // Phase 4 cua ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md, muc 13 - so
+  // doan da tu dong thu tong hop lai / da sua duoc TRUOC khi bao cao cho
+  // nguoi dung (xem orchestrator.py::verify_and_retry_chapter_quality()).
+  auto_retry_summary?: {
+    segments_retried: number;
+    segments_fixed: number;
+  };
 }
 
 // Section 5b cua PHASE0_HANDOFF.md - khop BetaOutput trong
