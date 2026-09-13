@@ -75,6 +75,18 @@ def load_punctuation_pauses(path=None):
     return table
 
 
+def invalidate_cache() -> None:
+    """Xoa cache trong tien trinh - goi ngay sau khi POST /api/settings/punctuation-pauses
+    (backend/app/main.py) ghi de file, de load_punctuation_pauses() doc lai
+    TU DIA o lan goi ke tiep thay vi tra ve bang cu da cache. Khac voi
+    emotion-lexicon, bang nay KHONG bi dong bang vao 1 kieu Pydantic Literal
+    nao - split_chunk_by_punctuation() da goi load_punctuation_pauses() moi
+    lan xu ly 1 chunk (khong luu bien dong cung module), nen chi can xoa
+    cache la du de thay doi co hieu luc NGAY, khong can restart backend."""
+    global _cached_table
+    _cached_table = None
+
+
 def _build_punctuation_regex(table):
     """Xây regex khớp CHÍNH XÁC các dấu câu trong bảng (trừ
     dialogue_dash_line_start — không phải 1 chuỗi ký tự dấu câu thật, xử lý

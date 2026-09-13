@@ -211,6 +211,15 @@ def run_beta(
     # sub-chunks", giu 1 goc nhin nhat quan ve glossary ben vung xuyen suot
     # ca chuong thay vi N lan truy van embedding doc lap co the lech nhau.
     glossary_context = query_glossary(chapter_text)
+    # Doc LAI moi lan goi run_beta() (KHONG dung bien _emotion_lexicon dong
+    # cung module o tren) - xac nhan co THAT qua bao cao nguoi dung
+    # (2026-09-13): dung bien dong cung khien sua danh sach tu bieu cam qua
+    # Cai dat du lieu tren UI khong bao gio co hieu luc cho toi khi restart
+    # backend. load_emotion_lexicon() tu co cache rieng (xem
+    # voxdirector/config.py::invalidate_emotion_lexicon_cache(), goi ngay
+    # sau khi luu file trong backend/app/main.py) nen goi lai o day khong
+    # ton kem - chi la 1 lan tra cache trong da so truong hop.
+    current_emotion_lexicon = load_emotion_lexicon()
 
     corrected_parts = []
     all_applied_terms: list[AppliedTerm] = []
@@ -235,7 +244,7 @@ def run_beta(
             chunk_glossary_context,
             chunk_emotions,
             chunk_pauses,
-            _emotion_lexicon,
+            current_emotion_lexicon,
             PAUSE_LONG_TOKEN,
         )
         result: BetaOutput = call_structured(SYSTEM_PROMPT, user_content, BetaOutput, api_key=api_key)

@@ -163,6 +163,14 @@ def get_emotion_lexicon():
 def upload_emotion_lexicon(payload: dict):
     with open(EMOTION_LEXICON_PATH, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+    # Xac nhan co THAT qua bao cao nguoi dung (2026-09-13): truoc ban sua
+    # nay, luu file xong nhung Beta van dung ban cache cu trong bo nho cho
+    # toi khi restart backend thu cong - khong bao loi, chi am tham khong
+    # co hieu luc. Xem docstring invalidate_emotion_lexicon_cache() de biet
+    # gioi han con lai (them/xoa HANG NHAN moi van can restart).
+    from voxdirector.config import invalidate_emotion_lexicon_cache
+
+    invalidate_emotion_lexicon_cache()
     return {"status": "ok", "labels": [k for k in payload if not k.startswith("_")]}
 
 
@@ -191,6 +199,12 @@ def get_punctuation_pauses():
 def upload_punctuation_pauses(payload: dict):
     with open(PUNCTUATION_PAUSES_PATH, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+    # Cung 1 loi voi emotion-lexicon o tren - xem invalidate_emotion_lexicon_cache().
+    # Bang nay khong bi dong bang vao kieu Pydantic Literal nao nen se co
+    # hieu luc NGAY, khong con gioi han nao con lai.
+    from pipeline.punctuation_pauses import invalidate_cache
+
+    invalidate_cache()
     return {"status": "ok", "keys": [k for k in payload if not k.startswith("_")]}
 
 

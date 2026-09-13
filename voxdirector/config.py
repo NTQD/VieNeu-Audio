@@ -81,8 +81,20 @@ WER_PASS_THRESHOLD = 0.08
 # nuot mat co the khong lam WER tong the vuot nguong neu chunk du dai).
 # GAMMA_MAX_RETRIES: so lan tu dong tong hop lai toi da cho 1 chunk bi gan
 # co truoc khi chiu thua va de nguoi dung tu render lai thu cong.
+#
+# 2026-09-13 - GAMMA_WORD_CONFIDENCE_THRESHOLD HA TU 0.35 XUONG 0.15, XAC
+# NHAN CO THAT qua 1 lan chay that cua nguoi dung tren 1 chuong 2013 tu:
+# 4/5 chunk bi gan co (chu khong phai thieu so hiem gap nhu ky vong) - lam
+# QA cham bat thuong (~5 phut/chuong nho tren CPU) vi retry-and-pick-best
+# (Phase 4 muc 13) chay lai cho GAN NHU MOI chunk. 0.35 qua nhay - faster-
+# whisper "medium" tren tieng Viet bao ty le tin cay duoi 35% cho kha nhieu
+# tu DUNG (khong phai nuot am that), khong phai chi loi that su. 0.15 bat
+# LOI RO RET hon (tu ASR gan nhu chac chan sai), giam bao dong gia trong
+# khi van giu duoc kha nang bat loi nuot tu that su - VAN LA GIA TRI TAM
+# THOI CHUA CHOT, can bo eval set that de hieu chuan chinh xac (xem ghi chu
+# tren) - chi la it bao dong hon so voi 0.35 ban dau, khong phai da toi uu.
 GAMMA_FLAG_CUTOFF_MULTIPLIER = float(os.environ.get("VOXDIRECTOR_GAMMA_FLAG_CUTOFF_MULTIPLIER", "1.5"))
-GAMMA_WORD_CONFIDENCE_THRESHOLD = float(os.environ.get("VOXDIRECTOR_GAMMA_WORD_CONFIDENCE_THRESHOLD", "0.35"))
+GAMMA_WORD_CONFIDENCE_THRESHOLD = float(os.environ.get("VOXDIRECTOR_GAMMA_WORD_CONFIDENCE_THRESHOLD", "0.15"))
 GAMMA_MAX_RETRIES = int(os.environ.get("VOXDIRECTOR_GAMMA_MAX_RETRIES", "2"))
 
 # Sentinel dùng bởi Alpha (đánh dấu điểm cần ngắt kịch tính dài) + Beta (chèn
@@ -200,3 +212,24 @@ def load_emotion_lexicon(path=None):
     if path is None:
         _cached_emotion_lexicon = lexicon
     return lexicon
+
+
+def invalidate_emotion_lexicon_cache() -> None:
+    """Xoa cache trong tien trinh - goi ngay sau khi POST /api/settings/emotion-lexicon
+    (backend/app/main.py) ghi de file, de load_emotion_lexicon() doc lai TU
+    DIA o lan goi ke tiep thay vi tra ve ban cu da cache. XAC NHAN CO THAT
+    qua bao cao nguoi dung (2026-09-13): truoc ban sua nay, sua Cai dat du
+    lieu tren UI luu file dung nhung KHONG anh huong gi toi pipeline dang
+    chay cho toi khi restart backend thu cong - loi ngam, khong bao loi ro
+    rang cho nguoi dung biet.
+
+    LUU Y con lai (KHONG sua duoc bang cache invalidation don thuan): tap
+    NHAN (label) hop le - "cuoi"/"tho_dai"/"hang_giong" - duoc dung de xay
+    kieu Literal cua Pydantic (EmotionLabel trong alpha_ingestion.py/
+    beta_consistency.py) ngay luc MODULE duoc import, dung de ep schema dau
+    ra cua Gemini. Sua NOI DUNG danh sach tu cho 1 nhan DA CO se co hieu luc
+    ngay (xem run_beta() da doc lai load_emotion_lexicon() moi lan goi thay
+    vi dung bien dong cung module) - nhung THEM/XOA hang nhan hoan toan moi
+    van can restart backend, vi kieu Pydantic khong tu doi lai duoc."""
+    global _cached_emotion_lexicon
+    _cached_emotion_lexicon = None
