@@ -33,15 +33,27 @@ export default function ProgressStages({ latest }: Props) {
           return (
             <div key={node.key} className="flex flex-1 items-center last:flex-none">
               <div className="flex flex-col items-center gap-1.5">
-                <div
-                  className={cn(
-                    "flex size-10 items-center justify-center rounded-full border-2 transition-colors",
-                    isDone && "border-jade bg-jade/15 text-jade",
-                    isCurrent && "border-lacquer bg-lacquer/15 text-lacquer animate-pulse",
-                    !isDone && !isCurrent && "border-border text-muted-foreground"
+                <div className="relative flex size-10 items-center justify-center">
+                  {/* Vong tron xoay quanh icon dang chay - yeu cau nguoi dung
+                      (2026-09-13): "loading effect... green circle rotating
+                      around the circular icon". Vien voi 1 canh trong suot
+                      (border-t-transparent) + animate-spin cua Tailwind tao
+                      hieu ung spinner chuan, mau jade (xanh la) theo dung yeu
+                      cau - tach rieng khoi vien mau cua chinh icon (lacquer/
+                      do) o duoi, khong doi mau nen "dang chay" hien co. */}
+                  {isCurrent && (
+                    <div className="absolute -inset-1 rounded-full border-2 border-jade border-t-transparent animate-spin" />
                   )}
-                >
-                  {isDone ? <Check className="size-4" /> : <Icon className="size-4" />}
+                  <div
+                    className={cn(
+                      "flex size-10 items-center justify-center rounded-full border-2 transition-colors",
+                      isDone && "border-jade bg-jade/15 text-jade",
+                      isCurrent && "border-lacquer bg-lacquer/15 text-lacquer",
+                      !isDone && !isCurrent && "border-border text-muted-foreground"
+                    )}
+                  >
+                    {isDone ? <Check className="size-4" /> : <Icon className="size-4" />}
+                  </div>
                 </div>
                 <span
                   className={cn(

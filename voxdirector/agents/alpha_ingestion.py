@@ -204,6 +204,38 @@ def _clamp_and_sort(chapters, text_len):
     return fixed
 
 
+def _close_coverage_gaps(chapters: list[ChapterBoundary], text_len: int) -> list[ChapterBoundary]:
+    """Dam bao MOI ky tu trong raw_text thuoc VE dung 1 chuong - khong bao
+    gio de sot 1 khoang nao KHONG chuong nao bao phu.
+
+    XAC NHAN CO THAT qua bao cao nguoi dung (2026-09-13, "van ban luon bi
+    cat cut o cuoi khi bat Alpha+Beta"): _clamp_and_sort() o tren chi KEP
+    index vao [0, text_len], KHONG bao gio EP ranh gioi chuong DAU phai bat
+    dau tu 0 hay ranh gioi chuong CUOI phai ket thuc dung text_len. Gemini
+    khong luon bao chinh xac tuyet doi 2 con so nay khop het toan bo van
+    ban (dac biet ranh gioi CUOI CUNG cua ca tai lieu) - phan van ban nam
+    NGOAI moi chuong bi loai hoan toan khoi chapters_out (list comprehension
+    ben duoi chi lay raw_text[c.start_index:c.end_index]), nen KHONG BAO
+    GIO den duoc Beta/TTS - dung y het trieu chung "cat cut o cuoi" nguoi
+    dung bao cao, va giai thich vi sao no LIEN QUAN toi Alpha (chinh Alpha
+    la noi lam mat doan van, khong phai Beta hay TTS).
+
+    3 buoc: (1) chuong dau ep ve start_index=0, (2) dong moi khoang trong
+    GIUA 2 chuong lien tiep bang cach gan cho chuong TRUOC do (lua chon don
+    gian, hop ly hon la bo qua hoan toan), (3) chuong cuoi ep end_index=text_len."""
+    if not chapters:
+        return chapters
+    fixed = list(chapters)
+    if fixed[0].start_index > 0:
+        fixed[0] = fixed[0].model_copy(update={"start_index": 0})
+    for i in range(len(fixed) - 1):
+        if fixed[i].end_index < fixed[i + 1].start_index:
+            fixed[i] = fixed[i].model_copy(update={"end_index": fixed[i + 1].start_index})
+    if fixed[-1].end_index < text_len:
+        fixed[-1] = fixed[-1].model_copy(update={"end_index": text_len})
+    return fixed
+
+
 def _filter_hallucinated_quotes(items, raw_text):
     """Loại bỏ mọi entry (emotion_flagged_segments/pause_points) có
     quoted_text KHÔNG xuất hiện (sau khi chuẩn hoá khoảng trắng) trong
@@ -438,6 +470,7 @@ def run_alpha(raw_text: str, api_key: str | None = None) -> dict:
             start_index=0, end_index=len(raw_text),
             confidence_score=1.0, needs_review=False,
         )]
+    chapters = _close_coverage_gaps(chapters, len(raw_text))
     chapters_out = [
         {
             "text": raw_text[c.start_index:c.end_index].strip(),
