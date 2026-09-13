@@ -7,7 +7,7 @@ import NewTermConfirmationPanel from "@/components/NewTermConfirmationPanel";
 import SettingsPanel from "@/components/SettingsPanel";
 import Logo from "@/components/Logo";
 import ThemeToggle from "@/components/ThemeToggle";
-import { fetchVoicePresets, getStoredApiKey, submitText, uploadBackgroundImage, wsUrlFor } from "@/lib/api";
+import { approveNewTerm, fetchVoicePresets, getStoredApiKey, submitText, uploadBackgroundImage, wsUrlFor } from "@/lib/api";
 import type {
   AdvancedOptionsState,
   NewTermCandidate,
@@ -34,6 +34,7 @@ export default function Home() {
   });
   const [workArea, setWorkArea] = useState<WorkAreaState>({ kind: "empty" });
   const [newTerms, setNewTerms] = useState<NewTermCandidate[]>([]);
+  const [approvingTerm, setApprovingTerm] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -107,6 +108,23 @@ export default function Home() {
     };
   }
 
+  // Section 5a cua PHASE0_HANDOFF.md (P0) - truoc ban sua nay, "Duyet" chi
+  // xoa candidate khoi state local ma khong ghi gi vao glossary that. Gio
+  // goi API that TRUOC, chi xoa khoi danh sach khi ghi thanh cong - loi
+  // duoc bao ro thay vi am tham "trong nhu da hoat dong".
+  async function handleApproveTerm(candidate: NewTermCandidate) {
+    setApprovingTerm(candidate.term);
+    try {
+      await approveNewTerm(candidate);
+      setNewTerms((prev) => prev.filter((c) => c.term !== candidate.term));
+    } catch (err) {
+      console.error(err);
+      setSubmitError(err instanceof Error ? err.message : "Duyệt thuật ngữ thất bại");
+    } finally {
+      setApprovingTerm(null);
+    }
+  }
+
   return (
     <main className="min-h-screen bg-background">
       <div className="mx-auto max-w-6xl px-4 py-8">
@@ -146,7 +164,8 @@ export default function Home() {
       <NewTermConfirmationPanel
         candidates={newTerms}
         onDismiss={() => setNewTerms([])}
-        onApprove={(term) => setNewTerms((prev) => prev.filter((c) => c.term !== term))}
+        onApprove={handleApproveTerm}
+        approvingTerm={approvingTerm}
       />
     </main>
   );

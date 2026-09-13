@@ -1,4 +1,4 @@
-import type { SubmitResponse, VoicePresets } from "./types";
+import type { NewTermCandidate, SubmitResponse, VoicePresets } from "./types";
 
 // "" (rong) = dung DUONG DAN TUONG DOI, tuc goi ve CUNG origin da tai trang
 // - dung cho che do Docker Compose that (Section 12 cua spec): trinh duyet
@@ -146,6 +146,19 @@ export async function uploadSettingsFile(
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(`Lưu ${key} thất bại (${res.status})`);
+}
+
+// Section 5a cua PHASE0_HANDOFF.md (P0) - ghi 1 new_entry_candidate da duoc
+// nguoi dung xac nhan ("Duyet") vao glossary that (ChromaDB, phia backend) -
+// truoc ban sua nay khong co endpoint nay, nut "Duyet" chi xoa khoi danh
+// sach hien thi ma khong ghi gi ca.
+export async function approveNewTerm(candidate: NewTermCandidate): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/glossary/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ term: candidate.term, entity_type: candidate.entity_type }),
+  });
+  if (!res.ok) throw new Error(await extractErrorMessage(res, "Duyệt thuật ngữ thất bại"));
 }
 
 // Step 10 cua build order - "Segment re-render endpoint". Tra ve audio_url

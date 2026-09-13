@@ -6,6 +6,7 @@ import { cn } from "cn";
 import { Badge } from "@/components/ui/badge";
 import SegmentList from "./SegmentList";
 import AudioPlayerBar from "./AudioPlayerBar";
+import BetaActivityPanel from "./BetaActivityPanel";
 import type { ResultMessage, TimingBreakdown } from "@/lib/types";
 import { API_BASE_URL, rerenderSegment } from "@/lib/api";
 
@@ -123,8 +124,13 @@ export default function ResultView({ result, qaEnabled, jobId }: Props) {
             WER: {(result.quality_summary.word_error_rate * 100).toFixed(1)}% —{" "}
             {result.quality_summary.flagged_segments_count} đoạn bị đánh dấu nghi ngờ.
           </p>
+          {result.quality_summary.summary && (
+            <p className="text-xs text-muted-foreground">{result.quality_summary.summary}</p>
+          )}
         </div>
       )}
+
+      <BetaActivityPanel expressionReport={result.expression_report} pauseReport={result.pause_report} />
 
       <SegmentList
         segments={result.segments}

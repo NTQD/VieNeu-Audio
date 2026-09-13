@@ -188,12 +188,16 @@ def process_chapter(
         corrected_text = corrected_text.replace("\\n", "\n")
         applied_terms = beta_result["applied_terms"]
         new_entry_candidates = beta_result["new_entry_candidates"]
+        expression_report = beta_result["expression_report"]
+        pause_report = beta_result["pause_report"]
     else:
         # Beta tat - dung nguyen chapter_text goc, khong sua thuat ngu/chen
         # bieu cam/chen sentinel ngat dai (xem docstring tham so beta_enabled).
         corrected_text = chapter_text
         applied_terms = []
         new_entry_candidates = []
+        expression_report = []
+        pause_report = []
         beta_duration_s = 0.0
 
     normalized_text = normalize_text_for_tts(corrected_text)
@@ -276,6 +280,8 @@ def process_chapter(
         "corrected_text": corrected_text,
         "applied_terms": applied_terms,
         "new_entry_candidates": new_entry_candidates,
+        "expression_report": expression_report,
+        "pause_report": pause_report,
         "chunks": chunks,
         "boundary_flags": boundary_flags,
         "part_paths": part_paths,

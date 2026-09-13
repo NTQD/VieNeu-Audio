@@ -7,13 +7,17 @@ import type { NewTermCandidate } from "@/lib/types";
 interface Props {
   candidates: NewTermCandidate[];
   onDismiss: () => void;
-  onApprove: (term: string) => void;
+  // Section 5a cua PHASE0_HANDOFF.md - can ca entity_type (khong chi term)
+  // de goi duoc POST /api/glossary/approve, nen truyen nguyen candidate thay
+  // vi chi mot chuoi term.
+  onApprove: (candidate: NewTermCandidate) => void;
+  approvingTerm?: string | null;
 }
 
 // Overlay/panel nho, khong chan (non-blocking), hien tren CA HAI trang thai
 // layout (desktop 2-cot / mobile stacked) - Section 8.1.1 cua spec. Xuat
 // hien khi Beta co new_entry_candidates can nguoi dung duyet.
-export default function NewTermConfirmationPanel({ candidates, onDismiss, onApprove }: Props) {
+export default function NewTermConfirmationPanel({ candidates, onDismiss, onApprove, approvingTerm }: Props) {
   if (candidates.length === 0) return null;
 
   return (
@@ -33,8 +37,8 @@ export default function NewTermConfirmationPanel({ candidates, onDismiss, onAppr
                 {c.entity_type}
               </Badge>
             </div>
-            <Button size="sm" onClick={() => onApprove(c.term)}>
-              Duyệt
+            <Button size="sm" onClick={() => onApprove(c)} disabled={approvingTerm === c.term}>
+              {approvingTerm === c.term ? "Đang lưu..." : "Duyệt"}
             </Button>
           </li>
         ))}

@@ -21,6 +21,9 @@ export interface SubmitResponse {
   detected_genre: string;
   suggested_voice_id: string;
   genre_confidence_score: number;
+  // Section 5c cua PHASE0_HANDOFF.md - so chuong Alpha danh dau ranh gioi
+  // tach chuong khong chac chan, can nguoi dung xem lai.
+  chapters_needing_review: number;
 }
 
 export type ProcessingStageKey = "alpha" | "beta" | "tts" | "assemble" | "qa";
@@ -52,6 +55,27 @@ export interface QualitySummary {
   word_error_rate: number;
   passed: boolean;
   flagged_segments_count: number;
+  // Section 5d cua PHASE0_HANDOFF.md - tuy chon (chi co khi QA bat), tu
+  // summarize_qa_report() - vang mat khi QA tat (xem fallback trong
+  // backend/app/main.py:ws_progress()).
+  summary?: string;
+}
+
+// Section 5b cua PHASE0_HANDOFF.md - khop BetaOutput trong
+// voxdirector/agents/beta_consistency.py. KHONG co truong vi tri/quoted_text
+// rieng - Beta khong tra ve doan van goc kem theo, chi tra ve ket qua khop/
+// khong khop cho tung muc Alpha da gan co (xem docstring ExpressionReportItem/
+// PauseReportItem o backend).
+export interface ExpressionReportItem {
+  matched: boolean;
+  emotion_label: string;
+  inserted_word: string | null;
+  skipped_reason: string | null;
+}
+
+export interface PauseReportItem {
+  matched: boolean;
+  skipped_reason: string | null;
 }
 
 // 2026-09-13 - phan bo thoi gian tung giai doan (giay), de tra loi cau hoi
@@ -77,6 +101,8 @@ export interface ResultMessage {
   quality_summary: QualitySummary;
   segments: SegmentInfo[];
   new_term_candidates: NewTermCandidate[];
+  expression_report: ExpressionReportItem[];
+  pause_report: PauseReportItem[];
   // 2026-09-12 - thoi gian THAT (giay) toan bo pipeline mat de xu ly xong job
   // nay (Alpha + Beta/TTS/ghep/video/QA) - xem backend/app/main.py:ws_progress().
   processing_time_s: number;

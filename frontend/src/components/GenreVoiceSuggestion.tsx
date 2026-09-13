@@ -25,6 +25,11 @@ export default function GenreVoiceSuggestion({ result }: Props) {
         </div>
       </div>
       <p className="text-xs text-muted-foreground">{result.chapters} chương phát hiện được.</p>
+      {result.chapters_needing_review > 0 && (
+        <p className="text-xs text-amber-600 dark:text-amber-500">
+          ⚠ {result.chapters_needing_review} chương cần xem lại ranh giới tách chương.
+        </p>
+      )}
     </div>
   );
 }

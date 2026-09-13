@@ -199,6 +199,10 @@ class SubmitResponse(BaseModel):
     detected_genre: str
     suggested_voice_id: str
     genre_confidence_score: float
+    # Section 5c cua PHASE0_HANDOFF.md - so chuong Alpha danh dau needs_review
+    # (ranh gioi tach chuong khong chac chan) - truoc ban sua nay, alpha_result
+    # da tinh dung field nay nhung khong bao gio roi khoi backend.
+    chapters_needing_review: int
 
 
 @app.post("/api/submit", response_model=SubmitResponse)
@@ -245,7 +249,39 @@ def submit(req: SubmitRequest):
         detected_genre=alpha_result["detected_genre"] or "",
         suggested_voice_id=alpha_result["suggested_voice_id"] or "",
         genre_confidence_score=alpha_result["genre_confidence_score"],
+        chapters_needing_review=sum(
+            1 for c in alpha_result["chapters"] if c.get("needs_review")
+        ),
     )
+
+
+_VALID_GLOSSARY_ENTITY_TYPES = {"character", "place", "term"}
+
+
+class GlossaryApproveRequest(BaseModel):
+    term: str
+    entity_type: str
+
+
+@app.post("/api/glossary/approve")
+def approve_glossary_term(req: GlossaryApproveRequest):
+    """Section 5a cua PHASE0_HANDOFF.md - P0: truoc ban sua nay,
+    approve_new_entries() (voxdirector/agents/beta_consistency.py) khong bao
+    gio duoc goi tu dau ca - nut "Duyet" o frontend chi xoa candidate khoi
+    danh sach hien thi, KHONG ghi gi vao glossary that. Endpoint nay la cau
+    noi con thieu.
+
+    Khong can job_id - ghi thang vao glossary ChromaDB ben ben, khong gan voi
+    1 job cu the (xem docstring approve_new_entries())."""
+    from voxdirector.agents.beta_consistency import approve_new_entries
+
+    if req.entity_type not in _VALID_GLOSSARY_ENTITY_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"entity_type không hợp lệ: {req.entity_type!r} (phải là character/place/term)",
+        )
+    approve_new_entries([{"term": req.term, "entity_type": req.entity_type}])
+    return {"status": "ok"}
 
 
 @app.post("/api/background-image/{job_id}")
@@ -473,10 +509,20 @@ async def ws_progress(websocket: WebSocket, job_id: str):
                 "flagged_segments_count": len(all_flagged),
                 "flagged_segments": all_flagged,
             }
+            # Section 5d cua PHASE0_HANDOFF.md - summarize_qa_report() da viet
+            # san (voxdirector/agents/gamma_qa.py) nhung chua tung duoc goi;
+            # tuy chon, tu fallback ve tom tat dung code neu khong co GEMINI_API_KEY
+            # (xem docstring ham do) nen khong lam gian doan pipeline khi loi.
+            from voxdirector.agents.gamma_qa import summarize_qa_report
+            qa_report["summary"] = summarize_qa_report(qa_report)
 
         all_new_terms = []
+        all_expression_report = []
+        all_pause_report = []
         for r in chapter_results:
             all_new_terms.extend(r["new_entry_candidates"])
+            all_expression_report.extend(r["expression_report"])
+            all_pause_report.extend(r["pause_report"])
 
         segments = []
         seg_id = 1
@@ -517,6 +563,8 @@ async def ws_progress(websocket: WebSocket, job_id: str):
             "quality_summary": qa_report or {"word_error_rate": 0.0, "passed": True, "flagged_segments_count": 0},
             "segments": segments,
             "new_term_candidates": all_new_terms,
+            "expression_report": all_expression_report,
+            "pause_report": all_pause_report,
             "processing_time_s": round(job.get("alpha_duration_s", 0.0) + (time.monotonic() - processing_started_at), 1),
             "timing_breakdown": timing_breakdown,
         })
