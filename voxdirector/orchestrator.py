@@ -422,11 +422,23 @@ def rerender_chunk(chapter_dir: str, chunk_index: int) -> str:
 
 
 def _segment_acceptable(result: dict, flag_cutoff: float) -> bool:
-    """1 ban tong hop duoc coi la 'du tot' (Phase 4 muc 13/15) neu dat CA
-    HAI tieu chi gan co cua verify_chapter_quality(): WER trong nguong VA
-    khong co tu nao bi bao do tin cay thap - chi dua vao WER se BO SOT
-    dung truong hop 1 tu nuot mat khong lam WER tong the vuot nguong."""
-    return result["word_error_rate"] <= flag_cutoff and not result["low_confidence_words"]
+    """1 ban tong hop duoc coi la 'du tot' (Phase 4 muc 13/15, muc 16 -
+    audio-health) neu dat DU CA 4 tieu chi gan co cua verify_chapter_quality():
+    WER trong nguong, khong co tu nao bi bao do tin cay thap, khong clipping,
+    va khong gan nhu im lang/co khoang lang bat thuong - chi dua vao WER se
+    BO SOT ca truong hop nuot tu ngau nhien LAN truong hop audio loi ky thuat
+    ma ASR van "doan" ra dung noi dung.
+
+    .get(..., False/[]) mac dinh an toan cho current_result dung ban dau
+    (xay tu flagged_segments entry cu, truoc khi audio-health duoc them) -
+    thieu key nghia la CHUA BIET, coi nhu khong co van de thay vi loi."""
+    return (
+        result["word_error_rate"] <= flag_cutoff
+        and not result["low_confidence_words"]
+        and not result.get("clipping", False)
+        and not result.get("near_silent", False)
+        and not result.get("long_silence_gaps", [])
+    )
 
 
 def retry_flagged_segment(
@@ -519,6 +531,9 @@ def verify_and_retry_chapter_quality(
         current_result = {
             "word_error_rate": f["deviation_score"],
             "low_confidence_words": f["low_confidence_words"],
+            "clipping": f.get("clipping", False),
+            "near_silent": f.get("near_silent", False),
+            "long_silence_gaps": f.get("long_silence_gaps", []),
         }
         result = retry_flagged_segment(
             chapter_dir, prefix, f["segment_index"], f["original_text"],

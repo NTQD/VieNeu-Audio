@@ -33,6 +33,7 @@ def _get_conn() -> sqlite3.Connection:
         _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         _conn.execute("PRAGMA journal_mode=WAL")
         _init_schema(_conn)
+        _migrate_schema(_conn)
     return _conn
 
 
@@ -99,6 +100,25 @@ def _init_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Them cot moi vao bang jobs da ton tai tu truoc (Phase 1) - CREATE
+    TABLE IF NOT EXISTS o _init_schema() KHONG tu them cot cho file .db da
+    co san (vd. voxdirector_db volume tren Docker da chay tu truoc). Muc 18
+    cua master plan (uoc tinh token/chi phi) can 3 cot moi; kiem tra
+    PRAGMA table_info() truoc khi ALTER de khong loi "duplicate column" khi
+    ham nay chay lai o lan khoi dong sau (da co cot roi)."""
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    new_cols = {
+        "gemini_prompt_tokens": "INTEGER",
+        "gemini_output_tokens": "INTEGER",
+        "estimated_cost_usd": "REAL",
+    }
+    for col, col_type in new_cols.items():
+        if col not in existing_cols:
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {col_type}")
+    conn.commit()
+
+
 def record_job(
     job_id: str,
     status: str,
@@ -117,11 +137,20 @@ def record_job(
     flagged_segments_count: int | None = None,
     new_term_candidates_count: int | None = None,
     error_message: str | None = None,
+    gemini_prompt_tokens: int | None = None,
+    gemini_output_tokens: int | None = None,
+    estimated_cost_usd: float | None = None,
 ) -> None:
     """Ghi 1 dong tom tat cho 1 job da xu ly xong (thanh cong hoac loi) - goi
     1 lan luc ket thuc ws_progress(). INSERT OR REPLACE theo job_id, phong
     khi nao can ghi de (khong nen xay ra binh thuong, moi job_id la UUID
-    moi)."""
+    moi).
+
+    gemini_prompt_tokens/gemini_output_tokens: tong token THAT SU da dung
+    qua Gemini cho CA job (tat ca lan goi Alpha + Beta cong lai) - xem
+    voxdirector/usage_tracker.py. estimated_cost_usd: quy doi ra USD theo
+    bang gia data/gemini_pricing.json (None neu chua cau hinh gia cho model
+    da dung - xem config.load_gemini_pricing(), KHONG tu dien gia $0)."""
     timing_breakdown = timing_breakdown or {}
     try:
         with _lock:
@@ -134,8 +163,9 @@ def record_job(
                     alpha_duration_s, beta_duration_s, tts_duration_s,
                     assemble_duration_s, video_duration_s, qa_duration_s,
                     processing_time_s, word_error_rate, qa_passed,
-                    flagged_segments_count, new_term_candidates_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    flagged_segments_count, new_term_candidates_count,
+                    gemini_prompt_tokens, gemini_output_tokens, estimated_cost_usd
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     job_id,
                     datetime.now(timezone.utc).isoformat(),
@@ -160,6 +190,9 @@ def record_job(
                     None if qa_passed is None else int(qa_passed),
                     flagged_segments_count,
                     new_term_candidates_count,
+                    gemini_prompt_tokens,
+                    gemini_output_tokens,
+                    estimated_cost_usd,
                 ),
             )
             conn.commit()

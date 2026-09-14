@@ -21,6 +21,25 @@ CONFIDENCE_THRESHOLD = 0.75
 # nghị đổi sang "gemini-3.6-flash".
 GEMINI_MODEL = os.environ.get("VOXDIRECTOR_GEMINI_MODEL", "gemini-3.6-flash")
 
+# 2026-09-14 - "Model resilience" (muc 17 cua master plan
+# ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md): danh sach model du phong,
+# THU THEO DUNG THU TU, CHI khi GEMINI_MODEL chinh khong con dung duoc
+# (ClientError 404 - model bi go bo/doi ten, hoac het luot retry 5xx). Viec
+# chon model nay CHI xay ra 1 LAN cho ca tien trinh backend, luc lan goi
+# call_structured() DAU TIEN thuc su chay (xem llm_client._resolve_model()) -
+# KHONG bao gio doi model GIUA CAC LAN GOI trong CUNG 1 job dang chay, dung
+# nguyen tac "1 model ghim cung/lan chay de tai lap duoc" da ghi o
+# GEMINI_MODEL o tren. Rong theo mac dinh - DANH SACH MODEL GEMINI THAT SU
+# CON DUOC CAP hien tai phai do NGUOI DUNG tu xac nhan qua
+# aistudio.google.com (khong the doan/bia ten model o day - dua vao 1 model
+# khong ton tai se khien chinh co che fallback nay tro thanh nguyen nhan loi
+# moi, thay vi giai phap).
+GEMINI_MODEL_FALLBACKS = [
+    m.strip()
+    for m in os.environ.get("VOXDIRECTOR_GEMINI_MODEL_FALLBACKS", "").split(",")
+    if m.strip()
+]
+
 # API key đọc từ biến môi trường — KHÔNG hardcode key trong code.
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 
@@ -97,6 +116,35 @@ GAMMA_FLAG_CUTOFF_MULTIPLIER = float(os.environ.get("VOXDIRECTOR_GAMMA_FLAG_CUTO
 GAMMA_WORD_CONFIDENCE_THRESHOLD = float(os.environ.get("VOXDIRECTOR_GAMMA_WORD_CONFIDENCE_THRESHOLD", "0.15"))
 GAMMA_MAX_RETRIES = int(os.environ.get("VOXDIRECTOR_GAMMA_MAX_RETRIES", "2"))
 
+# 2026-09-14 - "Audio-health checks" (muc 16 cua master plan): kiem tra CHI
+# BANG CODE tren chinh song am (khong lien quan ASR/Gemini) - clipping (mat
+# tieng do bien do vuot gioi han bieu dien so), khoang lang bat thuong BEN
+# TRONG 1 doan (dau hieu TTS "cam" giua chung roi tao ra khoang trong), va
+# ca doan gan nhu im lang hoan toan (dau hieu TTS that bai am tham, tra ve
+# audio gan nhu rong thay vi loi ro rang). GIA TRI TAM THOI, CHUA CHOT - cung
+# tinh than voi GAMMA_FLAG_CUTOFF_MULTIPLIER o tren, can nghe that + bo eval
+# set de hieu chuan chinh xac; dat o day de MINH BACH + SUA duoc qua env var
+# thay vi hardcode sau trong ham.
+#
+# GAMMA_AUDIO_CLIP_SAMPLE_RATIO: ty le mau (0-1) cham/gan cham bien do toi da
+# (|sample| >= 0.999 sau khi chuan hoa ve [-1, 1]) truoc khi coi ca file la
+# "co clipping" - 1 vai mau don le cham dinh la binh thuong (dinh am thanh
+# that), phai chiem 1 ty le dang ke moi la dau hieu bi cat am that su.
+GAMMA_AUDIO_CLIP_SAMPLE_RATIO = float(os.environ.get("VOXDIRECTOR_GAMMA_AUDIO_CLIP_SAMPLE_RATIO", "0.001"))
+# GAMMA_AUDIO_SILENCE_AMPLITUDE: bien do (0-1, sau chuan hoa) duoi nguong nay
+# duoc coi la "im lang" khi quet timeline theo cua so nho (xem
+# gamma_qa._silence_windows()).
+GAMMA_AUDIO_SILENCE_AMPLITUDE = float(os.environ.get("VOXDIRECTOR_GAMMA_AUDIO_SILENCE_AMPLITUDE", "0.01"))
+# GAMMA_AUDIO_MAX_INTERNAL_SILENCE_S: 1 khoang lang lien tuc BEN TRONG audio
+# (khong phai o dau/cuoi file) dai hon nguong nay (giay) bi gan co la bat
+# thuong - 1 cau/doan van dang doc khong nen co khoang trong dai co chu dich
+# nhu vay giua chung.
+GAMMA_AUDIO_MAX_INTERNAL_SILENCE_S = float(os.environ.get("VOXDIRECTOR_GAMMA_AUDIO_MAX_INTERNAL_SILENCE_S", "1.5"))
+# GAMMA_AUDIO_NEAR_SILENT_RMS: RMS (0-1, sau chuan hoa) toan bo file duoi
+# nguong nay bi coi la "gan nhu im lang hoan toan" - dau hieu TTS that bai
+# am tham (tra ve audio gan nhu rong) hon la 1 doan hop le nhung nho tieng.
+GAMMA_AUDIO_NEAR_SILENT_RMS = float(os.environ.get("VOXDIRECTOR_GAMMA_AUDIO_NEAR_SILENT_RMS", "0.005"))
+
 # Sentinel dùng bởi Alpha (đánh dấu điểm cần ngắt kịch tính dài) + Beta (chèn
 # vào text) + text_splitter.py (ép làm ranh giới chunk) + audio_postprocess.py
 # (áp khoảng lặng dài tại đó) — Section 7.2 của spec. Đây LÀ hằng số kỹ thuật
@@ -157,6 +205,16 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 VOICE_PRESETS_PATH = os.path.join(DATA_DIR, "voice_presets.json")
 EMOTION_LEXICON_PATH = os.path.join(DATA_DIR, "emotion_lexicon.json")
 GLOSSARY_SEED_PATH = os.path.join(DATA_DIR, "glossary_seed.json")
+# Muc 18 cua master plan (uoc tinh chi phi/job, xem voxdirector/usage_tracker.py
+# + estimate_cost_usd() ben duoi) - bang gia $/1 trieu token THEO TUNG MODEL,
+# team tu dien qua sua truc tiep file JSON (KHONG qua UI Cai dat du lieu nhu 3
+# file kia - day la thong so hiem khi doi, khac voi glossary/emotion lexicon
+# can sua thuong xuyen). PLACEHOLDER rong ($0) mac dinh - gia Gemini THAT SU
+# tai thoi diem dung phai do nguoi dung tu dien tu trang gia chinh thuc cua
+# Google, KHONG the doan/bia (gia thay doi theo thoi gian va theo model, bia
+# ra se cho ra 1 con so uoc tinh SAI trong khi trong ra dung, con nguy hiem
+# hon la khong hien thi gi).
+GEMINI_PRICING_PATH = os.path.join(DATA_DIR, "gemini_pricing.json")
 
 # Phase 1 cua ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md ("Persistence &
 # measurement"): SQLite job/trace log - ghi chi so (khong phai audio/text day
@@ -233,3 +291,49 @@ def invalidate_emotion_lexicon_cache() -> None:
     van can restart backend, vi kieu Pydantic khong tu doi lai duoc."""
     global _cached_emotion_lexicon
     _cached_emotion_lexicon = None
+
+
+_cached_gemini_pricing = None
+
+
+def load_gemini_pricing(path=None) -> dict:
+    """Nap bang gia $/1 trieu token theo model tu data/gemini_pricing.json -
+    xem chu thich day du o GEMINI_PRICING_PATH. Model khong co trong file
+    (hoac file khong ton tai) tra ve None cho model do khi tra cuu qua
+    estimate_cost_usd() - KHONG tu gan gia $0 (nhin giong "mien phi da xac
+    nhan" trong khi that ra la "chua cau hinh")."""
+    global _cached_gemini_pricing
+    if path is None and _cached_gemini_pricing is not None:
+        return _cached_gemini_pricing
+    load_path = path or GEMINI_PRICING_PATH
+    try:
+        with open(load_path, "r", encoding="utf-8") as f:
+            pricing = json.load(f)
+    except FileNotFoundError:
+        pricing = {}
+    if path is None:
+        _cached_gemini_pricing = pricing
+    return pricing
+
+
+def invalidate_gemini_pricing_cache() -> None:
+    """Xem invalidate_emotion_lexicon_cache() o tren - cung co che, du file
+    gia hien khong co endpoint Settings UI rieng (sua truc tiep tren dia)."""
+    global _cached_gemini_pricing
+    _cached_gemini_pricing = None
+
+
+def estimate_cost_usd(model: str, prompt_tokens: int, output_tokens: int) -> float | None:
+    """Quy doi so token THAT SU da dung (do Gemini API tra ve, xem
+    voxdirector/usage_tracker.py) ra USD theo gia da cau hinh cho DUNG model
+    da dung. Tra ve None (khong phai 0.0) neu model nay chua co trong bang gia
+    - phan biet ro "chua biet gia" voi "gia = 0"."""
+    pricing = load_gemini_pricing()
+    rate = pricing.get(model)
+    if not rate:
+        return None
+    input_rate = rate.get("input_per_1m_tokens_usd")
+    output_rate = rate.get("output_per_1m_tokens_usd")
+    if input_rate is None or output_rate is None:
+        return None
+    return (prompt_tokens / 1_000_000) * input_rate + (output_tokens / 1_000_000) * output_rate

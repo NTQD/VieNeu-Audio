@@ -4,9 +4,15 @@ cần sau này.
 """
 
 import json
+import threading
 import time
 
-from voxdirector.config import GEMINI_API_KEY, GEMINI_MAX_OUTPUT_TOKENS, GEMINI_MODEL
+from voxdirector.config import (
+    GEMINI_API_KEY,
+    GEMINI_MAX_OUTPUT_TOKENS,
+    GEMINI_MODEL,
+    GEMINI_MODEL_FALLBACKS,
+)
 
 _client = None  # client mac dinh cua server, dung khi khong co BYOK key
 _client_by_key = {}  # api_key -> genai.Client, cache rieng cho tung BYOK key
@@ -18,6 +24,14 @@ _client_by_key = {}  # api_key -> genai.Client, cache rieng cho tung BYOK key
 # nhiên ở khoảng 1/3 lượt gọi thật — không phải giả định, đo được trực tiếp.
 _MAX_RETRIES = 3
 _RETRY_BACKOFF_S = 2.0  # nhân đôi mỗi lần thử lại: 2s, 4s, 8s
+
+# Model resilience (muc 17 cua master plan, xem chu thich day du o
+# config.GEMINI_MODEL_FALLBACKS) - resolve 1 LAN cho ca tien trinh, luc lan
+# goi call_structured() dau tien THUC SU chay xong (thanh cong voi model
+# nao thi CACHE lai model do cho MOI lan goi ve sau, khong resolve lai giua
+# chung 1 job dang chay). None nghia la CHUA resolve.
+_active_model: str | None = None
+_active_model_lock = threading.Lock()
 
 
 def _get_client(api_key: str | None = None):
@@ -48,6 +62,103 @@ def _get_client(api_key: str | None = None):
     return _client
 
 
+def _generate_with_retry(client, model: str, user_content, config):
+    """Goi generate_content voi 1 model CO DINH, thu lai toi da _MAX_RETRIES
+    lan CHI cho loi 5xx tam thoi (backoff tang dan). Loi 4xx (ClientError)
+    nem ra NGAY o lan dau, khong retry - xem ly do o docstring cu cua
+    call_structured() truoc day (van dung nguyen)."""
+    from google.genai import errors
+
+    last_error = None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            return client.models.generate_content(
+                model=model, contents=user_content, config=config,
+            )
+        except errors.ServerError as e:
+            last_error = e
+            if attempt < _MAX_RETRIES - 1:
+                time.sleep(_RETRY_BACKOFF_S * (2 ** attempt))
+    raise last_error
+
+
+def _resolve_model(client, user_content, config) -> tuple[object, str]:
+    """Xac dinh model se dung cho CA TIEN TRINH nay (xem
+    config.GEMINI_MODEL_FALLBACKS) - CHI chay logic tim fallback o LAN GOI
+    DAU TIEN (khi _active_model con la None); sau khi 1 model da thanh cong,
+    moi lan goi sau CHI dung dung model do, khong tim lai (giu dung nguyen
+    tac "1 model ghim cung/lan chay" cua GEMINI_MODEL). Tra ve
+    (response, model_da_dung) cua chinh lan goi thanh cong dau tien, de khoi
+    phai goi lai generate_content 1 lan nua cho model do.
+
+    QUAN TRONG: lock CHI bao quanh phan doc/ghi _active_model (1 phep gan
+    bien, tuc thi), KHONG bao quanh luc goi generate_content that su qua
+    mang - VPS co nhieu job dong thoi (nhieu user) se goi ham nay tu nhieu
+    luong/task cung luc; giu lock trong luc cho response se lam TOAN BO Gemini
+    call cua ca server bi tuan tu hoa (1 job phai doi job khac goi API xong
+    moi duoc goi) - can tranh loi nay khi thiet ke tinh nang resilience nay."""
+    global _active_model
+    from google.genai import errors
+
+    with _active_model_lock:
+        model = _active_model
+    if model is not None:
+        response = _generate_with_retry(client, model, user_content, config)
+        return response, model
+
+    # Chua resolve lan nao - nhieu job dong thoi co the cung roi vao nhanh
+    # nay truoc khi 1 job nao thanh cong (chi xay ra 1 lan luc tien trinh
+    # moi khoi dong/sau restart, khong lap lai) - chap nhan vai lan goi API
+    # trung lap trong truong hop hiem nay, doi lay viec KHONG serialize toan
+    # bo server.
+    candidates = [GEMINI_MODEL, *GEMINI_MODEL_FALLBACKS]
+    last_error = None
+    for i, candidate_model in enumerate(candidates):
+        try:
+            response = _generate_with_retry(client, candidate_model, user_content, config)
+        except errors.ServerError as e:
+            # Da het luot retry 5xx tam thoi cho model nay (vd. 503 "high
+            # demand" lien tuc) - thu model du phong tiep theo.
+            last_error = e
+            continue
+        except errors.ClientError as e:
+            if e.code == 404:
+                # Model nay khong ton tai/da bi go bo cho key nay - ro rang
+                # la van de CUA MODEL, thu model du phong tiep theo.
+                last_error = e
+                continue
+            # Loi 4xx khac (401/403 sai key, 429 het quota, 400 request sai)
+            # KHONG lien quan gi den viec chon model - doi model khac cung
+            # se loi y het, chi lam cham viec bao loi that su. Nem ra NGAY,
+            # giu dung nguyen tac cu (khong retry 4xx).
+            raise
+        else:
+            with _active_model_lock:
+                if _active_model is None:
+                    _active_model = candidate_model
+                    if i > 0:
+                        print(
+                            f"[VoxDirector] CANH BAO: model chinh '{GEMINI_MODEL}' khong "
+                            f"dung duoc ({last_error}), da chuyen sang model du phong "
+                            f"'{candidate_model}' cho toi khi backend restart."
+                        )
+            return response, candidate_model
+    # Het CA danh sach candidates (chinh + du phong, neu co) ma khong model
+    # nao dung duoc - nem lai DUNG loi goc cua candidate CUOI CUNG (giu
+    # nguyen kieu ngoai le that su, vd. errors.ServerError/errors.ClientError)
+    # thay vi boc trong 1 RuntimeError moi: (1) code goi call_structured() o
+    # noi khac co the dang bat DUNG kieu loi nay (xem tests/test_llm_client.py),
+    # (2) khi CHI CO 1 candidate (GEMINI_MODEL_FALLBACKS rong - mac dinh),
+    # day chinh la hanh vi CU truoc khi tinh nang nay ton tai, khong nen doi.
+    if len(candidates) > 1:
+        print(
+            f"[VoxDirector] CANH BAO: khong co model Gemini nao trong {candidates} "
+            f"dung duoc (kiem tra config.GEMINI_MODEL_FALLBACKS neu can them model "
+            f"du phong THAT SU con duoc cap - xem aistudio.google.com)."
+        )
+    raise last_error
+
+
 def call_structured(system_prompt, user_content, response_schema, api_key: str | None = None):
     """Gọi Gemini với JSON mode bắt buộc — trả về dict đã parse theo
     response_schema (Pydantic model class).
@@ -57,14 +168,17 @@ def call_structured(system_prompt, user_content, response_schema, api_key: str |
     response_schema) để tránh model trả markdown fences hoặc giải thích xen
     lẫn JSON.
 
-    Model được GHIM CỨNG theo config.GEMINI_MODEL cho MỌI lệnh gọi trong 1
-    lần chạy pipeline — không dùng auto-routing/multi-provider, để kết quả
-    có thể tái lập (xem Section 7 của spec).
+    Model được GHIM CỨNG cho MỌI lệnh gọi trong 1 lần chạy pipeline — không
+    tự đổi model giữa các lần gọi của CÙNG 1 job, để kết quả có thể tái lập
+    (xem Section 7 của spec). config.GEMINI_MODEL_FALLBACKS cho phép chuyển
+    sang model dự phòng nếu model chính không còn dùng được — nhưng chỉ được
+    quyết định 1 lần cho cả tiến trình backend (xem _resolve_model()), không
+    bao giờ đổi model giữa chừng 1 job đang chạy.
 
     api_key: BYOK - key riêng của người dùng gửi kèm request (Section 13 của
     spec, đã được đội ngũ chốt 2026-09-10). None thì dùng key mặc định của
     server (xem _get_client())."""
-    from google.genai import errors, types
+    from google.genai import types
 
     client = _get_client(api_key)
     config = types.GenerateContentConfig(
@@ -78,22 +192,27 @@ def call_structured(system_prompt, user_content, response_schema, api_key: str |
         max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
     )
 
-    last_error = None
-    for attempt in range(_MAX_RETRIES):
-        try:
-            response = client.models.generate_content(
-                model=GEMINI_MODEL, contents=user_content, config=config,
+    response, model_used = _resolve_model(client, user_content, config)
+
+    # Muc 18 cua master plan (uoc tinh chi phi/job) - ghi lai SO TOKEN THAT
+    # SU da dung (do chinh Gemini API tra ve, khong tu uoc tinh) vao bo dem
+    # cua job dang chay (xem voxdirector/usage_tracker.py). Boc try/except
+    # rieng - CUNG 1 nguyen tac voi voxdirector/db.py (record_job/record_chapter):
+    # 1 loi ghi so lieu PHU TRO (vd. usage_metadata thieu/sai dinh dang o 1
+    # phien ban SDK khac, hoac response gia lap trong test khong co field
+    # nay) KHONG duoc phep lam gian doan ket qua THAT cua lan goi Gemini nay.
+    try:
+        usage = getattr(response, "usage_metadata", None)
+        if usage is not None:
+            from voxdirector import usage_tracker
+
+            usage_tracker.record(
+                model_used,
+                int(usage.prompt_token_count or 0),
+                int(usage.candidates_token_count or 0),
             )
-            break
-        except errors.ServerError as e:
-            # Lỗi 5xx tạm thời (vd. 503 "high demand") — thử lại với backoff
-            # tăng dần. Lỗi 4xx (ClientError — sai model, hết quota/billing)
-            # KHÔNG retry ở đây, để lộ ra ngay cho người gọi xử lý.
-            last_error = e
-            if attempt < _MAX_RETRIES - 1:
-                time.sleep(_RETRY_BACKOFF_S * (2 ** attempt))
-    else:
-        raise last_error
+    except Exception as e:
+        print(f"[VoxDirector] Canh bao: khong ghi duoc token usage ({e}) - khong anh huong pipeline.")
 
     # Xac nhan CO THAT (2026-09-12) - khi Gemini cham gioi han max_output_tokens
     # giua chung 1 chuoi text dai (vd. corrected_text cua Beta, hoac chapters

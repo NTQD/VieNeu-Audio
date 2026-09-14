@@ -83,6 +83,18 @@ export interface QualitySummary {
     segments_retried: number;
     segments_fixed: number;
   };
+  // Muc 16 cua master plan (audio-health checks) - kiem tra CHI BANG CODE
+  // tren chinh song am (clipping/khoang lang bat thuong/gan nhu im lang),
+  // khong lien quan ASR - xem voxdirector/agents/gamma_qa.py::check_audio_health().
+  // Cac chunk co van de nay CUNG duoc gan co trong flagged_segments (tung
+  // muc co the mang them clipping/near_silent/long_silence_gaps) VA da tu
+  // dong duoc dua vao dieu kien retry-and-pick-best - truong nay chi la
+  // tom tat NHANH cho ca job, khong phai nguon du lieu duy nhat.
+  audio_health?: {
+    any_clipping: boolean;
+    any_near_silent: boolean;
+    total_internal_silence_gaps: number;
+  };
 }
 
 // Section 5b cua PHASE0_HANDOFF.md - khop BetaOutput trong
@@ -130,6 +142,17 @@ export interface TimingBreakdown {
   qa_s: number;
 }
 
+// Muc 18 cua master plan (uoc tinh token/chi phi Gemini moi job) - khop
+// _pop_gemini_usage_summary() trong backend/app/main.py. estimated_cost_usd
+// la null (khong phai 0) khi bat ky model nao da dung CHUA co gia trong
+// data/gemini_pricing.json - phan biet "chua cau hinh gia" voi "gia = 0".
+export interface GeminiUsageSummary {
+  gemini_prompt_tokens: number;
+  gemini_output_tokens: number;
+  gemini_by_model: Record<string, { prompt_tokens: number; output_tokens: number; calls: number }>;
+  estimated_cost_usd: number | null;
+}
+
 export interface ResultMessage {
   type: "result";
   audio_url: string;
@@ -147,6 +170,7 @@ export interface ResultMessage {
   // nay (Alpha + Beta/TTS/ghep/video/QA) - xem backend/app/main.py:ws_progress().
   processing_time_s: number;
   timing_breakdown: TimingBreakdown;
+  gemini_usage: GeminiUsageSummary;
 }
 
 export interface ErrorMessage {

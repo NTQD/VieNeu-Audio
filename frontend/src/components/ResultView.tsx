@@ -8,7 +8,7 @@ import SegmentList from "./SegmentList";
 import AudioPlayerBar from "./AudioPlayerBar";
 import BetaActivityPanel from "./BetaActivityPanel";
 import DiffView from "./DiffView";
-import type { ResultMessage, TimingBreakdown } from "@/lib/types";
+import type { GeminiUsageSummary, ResultMessage, TimingBreakdown } from "@/lib/types";
 import { API_BASE_URL, rerenderSegment } from "@/lib/api";
 
 interface Props {
@@ -51,6 +51,26 @@ function TimingBreakdownRow({ breakdown }: { breakdown: TimingBreakdown }) {
   return (
     <p className="text-xs text-muted-foreground font-mono">
       {entries.map((e) => `${e.label} ${e.value.toFixed(1)}s`).join(" · ")}
+    </p>
+  );
+}
+
+// Muc 18 cua master plan - so token Gemini THAT SU da dung cho job nay (do
+// chinh Gemini API tra ve, xem backend/app/main.py::_pop_gemini_usage_summary()).
+// estimated_cost_usd = null (chua cau hinh gia trong data/gemini_pricing.json,
+// KHONG phai mien phi) hien "chưa cấu hình giá" thay vi $0.00 - tranh hieu
+// nham 1 con so THIEU la 1 con so DUNG.
+function GeminiUsageRow({ usage }: { usage: GeminiUsageSummary }) {
+  const totalTokens = usage.gemini_prompt_tokens + usage.gemini_output_tokens;
+  if (totalTokens === 0) return null;
+
+  return (
+    <p className="text-xs text-muted-foreground font-mono">
+      Token Gemini: {usage.gemini_prompt_tokens.toLocaleString("vi-VN")} vào +{" "}
+      {usage.gemini_output_tokens.toLocaleString("vi-VN")} ra —{" "}
+      {usage.estimated_cost_usd !== null
+        ? `~$${usage.estimated_cost_usd.toFixed(4)}`
+        : "chưa cấu hình giá"}
     </p>
   );
 }
@@ -105,6 +125,7 @@ export default function ResultView({ result, qaEnabled, jobId }: Props) {
           </span>
         </div>
         <TimingBreakdownRow breakdown={result.timing_breakdown} />
+        <GeminiUsageRow usage={result.gemini_usage} />
         <div className="mt-2">
           <AudioPlayerBar src={audioSrcBase} cacheBust={cacheBust} />
         </div>
@@ -131,6 +152,22 @@ export default function ResultView({ result, qaEnabled, jobId }: Props) {
               được {result.quality_summary.auto_retry_summary.segments_fixed} đoạn.
             </p>
           )}
+          {result.quality_summary.audio_health &&
+            (result.quality_summary.audio_health.any_clipping ||
+              result.quality_summary.audio_health.any_near_silent ||
+              result.quality_summary.audio_health.total_internal_silence_gaps > 0) && (
+              <p className="text-xs text-destructive">
+                Cảnh báo âm thanh:{" "}
+                {[
+                  result.quality_summary.audio_health.any_clipping && "có đoạn bị vỡ tiếng (clipping)",
+                  result.quality_summary.audio_health.any_near_silent && "có đoạn gần như im lặng hoàn toàn",
+                  result.quality_summary.audio_health.total_internal_silence_gaps > 0 &&
+                    `${result.quality_summary.audio_health.total_internal_silence_gaps} khoảng lặng bất thường giữa lời thoại`,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </p>
+            )}
           {result.quality_summary.summary && (
             <p className="text-xs text-muted-foreground">{result.quality_summary.summary}</p>
           )}

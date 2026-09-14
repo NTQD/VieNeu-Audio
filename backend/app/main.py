@@ -245,12 +245,25 @@ def submit(req: SubmitRequest):
     """Section 3 step 2 cua spec: "Submit -> Alpha runs" - goi Alpha THAT
     (Gemini that), dong bo, truoc khi WebSocket cua Beta/TTS/QA bat dau."""
     from voxdirector.orchestrator import process_submission
+    from voxdirector import usage_tracker
 
     api_key = req.api_key.strip() if req.api_key and req.api_key.strip() else None
+    # job_id duoc tao O DAY (truoc khi goi Alpha), som hon truoc day (truoc
+    # chi tao sau khi Alpha da chay xong) - can co job_id TRUOC lan goi
+    # Gemini dau tien cua job nay de usage_tracker biet ghi token cua Alpha
+    # vao dung job nao (muc 18 cua master plan, xem voxdirector/usage_tracker.py).
+    job_id = str(uuid.uuid4())
+    usage_tracker.set_current_job(job_id)
     _alpha_start = time.monotonic()
     try:
         alpha_result = process_submission(req.text, api_key=api_key, alpha_enabled=req.alpha_enabled)
     except Exception as e:
+        # Submit that bai hoan toan - khong con job_id nao dung den nua, xoa
+        # bo dem token (neu Alpha da thanh cong 1 vai window truoc khi loi -
+        # map-reduce nhieu window) de khong ro ri bo nho vinh vien trong
+        # usage_tracker._usage_by_job cho 1 job se khong bao gio goi
+        # record_job()/clear_job() o noi khac.
+        usage_tracker.clear_job(job_id)
         # Loi pho bien nhat voi BYOK la key sai/rong/het quota - tra ve loi
         # ro rang thay vi 500 chung chung, de frontend hien duoc cho nguoi
         # dung biet phai sua gi (thay vi chi thay "that bai"). alpha_enabled
@@ -263,7 +276,6 @@ def submit(req: SubmitRequest):
                 detail=f"Không gọi được Gemini (kiểm tra API key của bạn trong Cài đặt): {e}",
             )
         raise HTTPException(status_code=400, detail=f"Lỗi khi tách chương (Agent Alpha đang TẮT): {e}")
-    job_id = str(uuid.uuid4())
     job_dir = JOBS_DIR / job_id
     job_dir.mkdir(exist_ok=True)
 
@@ -386,6 +398,37 @@ STAGES = [
 ]
 
 
+def _pop_gemini_usage_summary(job_id: str) -> dict:
+    """Doc TONG token Gemini da dung cho 1 job (Alpha + moi chuong cua Beta/
+    QA cong lai, xem voxdirector/usage_tracker.py) roi XOA bo dem cua job do
+    (goi 1 lan LUC JOB VUA XONG - thanh cong hoac loi - de khong ro ri bo
+    nho). Quy doi ra USD qua config.estimate_cost_usd() cho TUNG model rieng
+    da dung (thuong chi 1 model, tru khi model resilience da chuyen model
+    giua chung tien trinh backend - xem llm_client._resolve_model()); cost
+    tong = None (khong phai 0.0) neu BAT KY model nao trong so do chua co
+    gia cau hinh, de khong hien 1 con so SAI (thieu) ma tuong nhu day du."""
+    from voxdirector import usage_tracker
+    from voxdirector.config import estimate_cost_usd
+
+    totals = usage_tracker.get_totals(job_id)
+    usage_tracker.clear_job(job_id)
+
+    cost_total = 0.0
+    cost_known = True
+    for model, counts in totals["by_model"].items():
+        cost = estimate_cost_usd(model, counts["prompt_tokens"], counts["output_tokens"])
+        if cost is None:
+            cost_known = False
+        else:
+            cost_total += cost
+
+    return {
+        "gemini_prompt_tokens": totals["total_prompt_tokens"],
+        "gemini_output_tokens": totals["total_output_tokens"],
+        "gemini_by_model": totals["by_model"],
+        "estimated_cost_usd": round(cost_total, 6) if cost_known and totals["by_model"] else None,
+    }
+
 
 @app.websocket("/api/ws/{job_id}")
 async def ws_progress(websocket: WebSocket, job_id: str):
@@ -399,6 +442,15 @@ async def ws_progress(websocket: WebSocket, job_id: str):
         await websocket.send_json({"type": "error", "message": "job_id không tồn tại"})
         await websocket.close()
         return
+
+    # Muc 18 cua master plan (uoc tinh token/chi phi) - dung LAI job_id nay
+    # (da duoc set luc /api/submit cho lan goi Alpha) de moi lan goi Gemini
+    # cua Beta/QA trong WS session nay cung duoc ghi vao TONG token cua CUNG
+    # 1 job (xem voxdirector/usage_tracker.py). asyncio.to_thread() ben duoi
+    # copy contextvars cua request nay sang thread moi nen van doc dung.
+    from voxdirector import usage_tracker
+
+    usage_tracker.set_current_job(job_id)
 
     params = websocket.query_params
     voice_id = params.get("voice_id") or job["alpha_result"]["suggested_voice_id"]
@@ -559,6 +611,10 @@ async def ws_progress(websocket: WebSocket, job_id: str):
             segments_retried_total = 0
             segments_fixed_total = 0
             any_chapter_changed = False
+            # Muc 16 cua master plan (audio-health checks) - suc khoe song am
+            # cua TUNG chuong (xem gamma_qa.verify_chapter_quality()), gop lai
+            # thanh 1 tom tat cho CA JOB o duoi, cung cach voi wers/all_flagged.
+            chapter_audio_health = []
             for ci, result in enumerate(chapter_results):
                 chapter_dir = str(job_dir / f"chapter_{ci + 1}")
                 r = await asyncio.to_thread(
@@ -568,6 +624,7 @@ async def ws_progress(websocket: WebSocket, job_id: str):
                 for f in r["flagged_segments"]:
                     f["chapter"] = ci + 1
                     all_flagged.append(f)
+                chapter_audio_health.append(r.get("audio_health", {}))
                 retry_summary = r["auto_retry_summary"]
                 segments_retried_total += retry_summary["segments_retried"]
                 segments_fixed_total += retry_summary["segments_fixed"]
@@ -594,6 +651,13 @@ async def ws_progress(websocket: WebSocket, job_id: str):
                 "auto_retry_summary": {
                     "segments_retried": segments_retried_total,
                     "segments_fixed": segments_fixed_total,
+                },
+                "audio_health": {
+                    "any_clipping": any(h.get("clipping") for h in chapter_audio_health),
+                    "any_near_silent": any(h.get("near_silent") for h in chapter_audio_health),
+                    "total_internal_silence_gaps": sum(
+                        len(h.get("long_silence_gaps", [])) for h in chapter_audio_health
+                    ),
                 },
             }
             # Section 5d cua PHASE0_HANDOFF.md - summarize_qa_report() da viet
@@ -665,6 +729,12 @@ async def ws_progress(websocket: WebSocket, job_id: str):
 
         processing_time_s = round(job.get("alpha_duration_s", 0.0) + (time.monotonic() - processing_started_at), 1)
 
+        # Muc 18 cua master plan - doc TONG token Gemini cua CA job (Alpha +
+        # moi chuong Beta/QA) 1 LAN duy nhat o day (truoc khi gui ket qua VA
+        # truoc khi ghi DB ben duoi) - _pop_gemini_usage_summary() da XOA bo
+        # dem sau khi doc, nen goi lai lan 2 se tra ve rong.
+        gemini_usage = _pop_gemini_usage_summary(job_id)
+
         await websocket.send_json({
             "type": "result",
             "audio_url": f"/api/audio/{job_id}",
@@ -678,10 +748,10 @@ async def ws_progress(websocket: WebSocket, job_id: str):
             "chapter_diffs": chapter_diffs,
             "processing_time_s": processing_time_s,
             "timing_breakdown": timing_breakdown,
+            "gemini_usage": gemini_usage,
         })
 
         from voxdirector.db import record_job
-
         record_job(
             job_id=job_id,
             status="completed",
@@ -699,6 +769,9 @@ async def ws_progress(websocket: WebSocket, job_id: str):
             qa_passed=(qa_report or {}).get("passed") if qa_report else None,
             flagged_segments_count=(qa_report or {}).get("flagged_segments_count"),
             new_term_candidates_count=len(all_new_terms),
+            gemini_prompt_tokens=gemini_usage["gemini_prompt_tokens"],
+            gemini_output_tokens=gemini_usage["gemini_output_tokens"],
+            estimated_cost_usd=gemini_usage["estimated_cost_usd"],
         )
     except WebSocketDisconnect:
         pass
@@ -706,6 +779,7 @@ async def ws_progress(websocket: WebSocket, job_id: str):
         from voxdirector.db import record_job
 
         alpha_result_for_trace = job.get("alpha_result")
+        gemini_usage = _pop_gemini_usage_summary(job_id)
         record_job(
             job_id=job_id,
             status="error",
@@ -715,6 +789,9 @@ async def ws_progress(websocket: WebSocket, job_id: str):
             beta_enabled=beta_enabled,
             qa_enabled=qa_enabled,
             voice_id=voice_id,
+            gemini_prompt_tokens=gemini_usage["gemini_prompt_tokens"],
+            gemini_output_tokens=gemini_usage["gemini_output_tokens"],
+            estimated_cost_usd=gemini_usage["estimated_cost_usd"],
         )
         await websocket.send_json({"type": "error", "message": str(e)})
 

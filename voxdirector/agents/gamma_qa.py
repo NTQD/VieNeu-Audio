@@ -12,8 +12,15 @@ dùng để tóm tắt các con số ĐÃ tính sẵn thành 1 đoạn báo cáo
 """
 
 import os
+import wave
+
+import numpy as np
 
 from voxdirector.config import (
+    GAMMA_AUDIO_CLIP_SAMPLE_RATIO,
+    GAMMA_AUDIO_MAX_INTERNAL_SILENCE_S,
+    GAMMA_AUDIO_NEAR_SILENT_RMS,
+    GAMMA_AUDIO_SILENCE_AMPLITUDE,
     GAMMA_FLAG_CUTOFF_MULTIPLIER,
     GAMMA_WORD_CONFIDENCE_THRESHOLD,
     WER_PASS_THRESHOLD,
@@ -57,6 +64,110 @@ def _get_model():
     return _model
 
 
+def _read_wav_mono_normalized(audio_path: str) -> tuple[np.ndarray, int]:
+    """Doc 1 file .wav THANH mang float32 don kenh, chuan hoa ve [-1, 1] -
+    dung stdlib wave (khong them dependency moi, numpy da co san - xem
+    backend/requirements.txt). Toan bo pipeline nay LUON ghi WAV qua ffmpeg
+    voi "-c:a pcm_s16le" (xem pipeline/audio_postprocess.py) nen chi can ho
+    tro dung 1 dinh dang nay - gap sampwidth khac la dau hieu co gi do da
+    doi o noi khac, nen bao loi RO RANG thay vi doan/ep kieu sai."""
+    with wave.open(audio_path, "rb") as wf:
+        n_channels = wf.getnchannels()
+        sampwidth = wf.getsampwidth()
+        framerate = wf.getframerate()
+        raw = wf.readframes(wf.getnframes())
+    if sampwidth != 2:
+        raise ValueError(
+            f"check_audio_health() chi ho tro WAV PCM 16-bit (pcm_s16le) - "
+            f"{audio_path} co sampwidth={sampwidth} byte (kiem tra lai "
+            f"pipeline/audio_postprocess.py neu dinh dang da doi)."
+        )
+    samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+    if n_channels > 1:
+        samples = samples.reshape(-1, n_channels).mean(axis=1)
+    return samples, framerate
+
+
+def _find_long_silence_gaps(
+    samples: np.ndarray, framerate: int, max_gap_s: float, window_ms: int = 20
+) -> list[tuple[float, float]]:
+    """Tim cac khoang lang lien tuc BEN TRONG audio (khong tinh khoang lang
+    dau/cuoi file - do la khoang nghi tu nhien truoc/sau khi noi, khong bat
+    thuong) dai hon max_gap_s giay. Quet theo cua so nho (mac dinh 20ms),
+    danh dau cua so nao co bien do dinh duoi GAMMA_AUDIO_SILENCE_AMPLITUDE la
+    'im lang', roi gom cac cua so lien tiep thanh 1 khoang."""
+    window_size = max(1, int(framerate * window_ms / 1000))
+    n_windows = len(samples) // window_size
+    if n_windows < 2:
+        return []
+    trimmed = samples[: n_windows * window_size].reshape(n_windows, window_size)
+    peak_per_window = np.max(np.abs(trimmed), axis=1)
+    is_silent = peak_per_window < GAMMA_AUDIO_SILENCE_AMPLITUDE
+
+    window_s = window_ms / 1000.0
+    gaps = []
+    i = 0
+    while i < n_windows:
+        if is_silent[i]:
+            j = i
+            while j < n_windows and is_silent[j]:
+                j += 1
+            # Bo qua neu cham dau (i == 0) hoac cham cuoi (j == n_windows) -
+            # khoang lang dau/cuoi tu nhien, chi quan tam khoang lang BAT
+            # THUONG xen giua loi noi.
+            if i > 0 and j < n_windows:
+                duration = (j - i) * window_s
+                if duration >= max_gap_s:
+                    gaps.append((round(i * window_s, 2), round(j * window_s, 2)))
+            i = j
+        else:
+            i += 1
+    return gaps
+
+
+def check_audio_health(audio_path: str) -> dict:
+    """Kiem tra chat luong song am THUAN BANG CODE, KHONG dung ASR/Gemini -
+    muc 16 cua master plan ("code-only audio-health checks: clipping,
+    unexpected silence, level normalization"). Bo sung cho verify_audio_quality()
+    (chi so sanh NOI DUNG qua ASR) bang cach nhin vao chinh DANG SONG - 1 doan
+    bi cat am (clipping) hoac gan nhu cau lai giua chung (khoang lang bat
+    thuong/gan nhu im lang hoan toan) co the van "doc dung tu" theo ASR
+    nhung vAN la audio LOI ve mat ky thuat.
+
+    Tra ve {clipping, clipping_sample_ratio, near_silent, peak_amplitude,
+    rms_level, long_silence_gaps}. GIA TRI TAM THOI, CHUA CHOT o cac nguong
+    so sanh (xem config.GAMMA_AUDIO_*) - can nghe that de hieu chuan, giong
+    tinh than GAMMA_FLAG_CUTOFF_MULTIPLIER."""
+    samples, framerate = _read_wav_mono_normalized(audio_path)
+    if len(samples) == 0:
+        return {
+            "clipping": False,
+            "clipping_sample_ratio": 0.0,
+            "near_silent": True,
+            "peak_amplitude": 0.0,
+            "rms_level": 0.0,
+            "long_silence_gaps": [],
+        }
+
+    abs_samples = np.abs(samples)
+    peak_amplitude = float(np.max(abs_samples))
+    # float64 cho phep tinh o day de tranh mat chinh xac khi binh phuong
+    # nhieu mau float32 lien tiep (RMS tren file dai).
+    rms_level = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+    clipping_sample_ratio = float(np.mean(abs_samples >= 0.999))
+
+    return {
+        "clipping": clipping_sample_ratio > GAMMA_AUDIO_CLIP_SAMPLE_RATIO,
+        "clipping_sample_ratio": round(clipping_sample_ratio, 5),
+        "near_silent": rms_level < GAMMA_AUDIO_NEAR_SILENT_RMS,
+        "peak_amplitude": round(peak_amplitude, 4),
+        "rms_level": round(rms_level, 5),
+        "long_silence_gaps": _find_long_silence_gaps(
+            samples, framerate, GAMMA_AUDIO_MAX_INTERNAL_SILENCE_S
+        ),
+    }
+
+
 def verify_audio_quality(audio_path: str, original_text: str) -> dict:
     """ASR round-trip cho 1 file audio: transcribe rồi so với original_text
     bằng Word Error Rate. Trả về {"word_error_rate", "transcript", "passed",
@@ -89,10 +200,18 @@ def verify_audio_quality(audio_path: str, original_text: str) -> dict:
         if w.probability < GAMMA_WORD_CONFIDENCE_THRESHOLD
     ]
 
+    # Muc 16 cua master plan - kiem tra them CHINH DANG SONG (khong lien
+    # quan ASR), gop chung vao 1 ket qua duy nhat de nam tren CUNG 1 cho voi
+    # WER/low_confidence_words, tien cho ca verify_chapter_quality() (gan co
+    # chunk) lan orchestrator._segment_acceptable() (dieu kien retry) dung
+    # chung 1 dict thay vi phai goi 2 ham roi tu ghep lai o nhieu noi.
+    health = check_audio_health(audio_path)
+
     return {
         "word_error_rate": wer, "transcript": transcript,
         "passed": wer < WER_PASS_THRESHOLD,
         "low_confidence_words": low_confidence_words,
+        **health,
     }
 
 
@@ -127,14 +246,26 @@ def verify_chapter_quality(chapter_dir: str, prefix: str, chunks: list[str]) -> 
         # co bat ky tu nao ASR bao do tin cay thap - 1 tu nuot mat co the
         # khong lam WER TONG THE cua ca chunk vuot nguong neu chunk du dai,
         # nen chi dua vao WER se BO SOT chinh loi "nuot tu ngau nhien" ma
-        # tinh nang nay duoc yeu cau giai quyet.
-        if part_result["word_error_rate"] > flag_cutoff or part_result["low_confidence_words"]:
+        # tinh nang nay duoc yeu cau giai quyet. Muc 16 - gan co THEM neu
+        # clipping/gan nhu im lang/co khoang lang bat thuong - day la loi
+        # KY THUAT tren chinh song am, ASR co the "doan" ra dung tu ngay ca
+        # khi audio thuc su co van de nen khong dua vao WER phat hien duoc.
+        if (
+            part_result["word_error_rate"] > flag_cutoff
+            or part_result["low_confidence_words"]
+            or part_result["clipping"]
+            or part_result["near_silent"]
+            or part_result["long_silence_gaps"]
+        ):
             flagged.append({
                 "segment_index": i,
                 "original_text": chunk_text,
                 "asr_transcript": part_result["transcript"],
                 "deviation_score": round(part_result["word_error_rate"], 2),
                 "low_confidence_words": part_result["low_confidence_words"],
+                "clipping": part_result["clipping"],
+                "near_silent": part_result["near_silent"],
+                "long_silence_gaps": part_result["long_silence_gaps"],
             })
 
     return {
@@ -146,6 +277,16 @@ def verify_chapter_quality(chapter_dir: str, prefix: str, chunks: list[str]) -> 
         # danh gia 1 ban thu lai co "du tot" hay chua, thay vi tinh lai
         # cong thuc 1 lan nua o noi khac (de lech neu sua 1 cho quen cho kia).
         "flag_cutoff": round(flag_cutoff, 3),
+        # Muc 16 - suc khoe song am cua CA CHUONG (audio da ghep), da co san
+        # tu lan goi verify_audio_quality() tren overall o tren, khong can
+        # doc/phan tich lai file 1 lan nua.
+        "audio_health": {
+            "clipping": overall["clipping"],
+            "near_silent": overall["near_silent"],
+            "peak_amplitude": overall["peak_amplitude"],
+            "rms_level": overall["rms_level"],
+            "long_silence_gaps": overall["long_silence_gaps"],
+        },
     }
 
 
