@@ -63,18 +63,25 @@ export default function LiveGlossaryManager() {
   const labelManuallySet = useRef(false);
   const suggestDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  async function load() {
+  useEffect(() => {
+    let cancelled = false;
     setStatus("loading");
     setError(null);
-    try {
-      const data = await fetchLiveGlossaryEntries();
-      setEntries(data);
-      setStatus("idle");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Tải thất bại");
-      setStatus("error");
-    }
-  }
+    fetchLiveGlossaryEntries()
+      .then((data) => {
+        if (cancelled) return;
+        setEntries(data);
+        setStatus("idle");
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : "Tải thất bại");
+        setStatus("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   function updateEntry(term: string, patch: Partial<GlossaryEntry>) {
     setEntries((prev) =>
@@ -161,26 +168,17 @@ export default function LiveGlossaryManager() {
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-xs text-muted-foreground">
-          Đọc/ghi trực tiếp trên ChromaDB — nơi các thuật ngữ đã &ldquo;Duyệt&rdquo; (từ popup
-          &ldquo;Thuật ngữ mới phát hiện&rdquo;) thực sự được lưu. Khác với tab &ldquo;Khởi
-          tạo&rdquo;, chỉ là file seed tĩnh nạp 1 lần lúc pipeline khởi động.
-        </p>
-        {entries === null && (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={load}
-            disabled={status === "loading"}
-            className="shrink-0"
-          >
-            {status === "loading" ? "Đang tải..." : "Tải để xem"}
-          </Button>
-        )}
-      </div>
+      <p className="text-xs text-muted-foreground">
+        Đọc/ghi trực tiếp trên ChromaDB — nơi các thuật ngữ đã &ldquo;Duyệt&rdquo; (từ popup
+        &ldquo;Thuật ngữ mới phát hiện&rdquo;) thực sự được lưu. Khác với tab &ldquo;Khởi
+        tạo&rdquo;, chỉ là file seed tĩnh nạp 1 lần lúc pipeline khởi động.
+      </p>
 
-      {status === "error" && <p className="text-xs text-destructive">{error}</p>}
+      {entries === null && (
+        <p className="text-sm text-muted-foreground">
+          {status === "error" ? (error ?? "Tải thất bại") : "Đang tải..."}
+        </p>
+      )}
 
       {entries !== null && (
         <div className="space-y-3">
