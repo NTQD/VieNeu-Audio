@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -11,122 +11,11 @@ import {
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { cn } from "cn";
-import { fetchSettingsFile, getStoredApiKey, setStoredApiKey, uploadSettingsFile } from "@/lib/api";
+import { getStoredApiKey, setStoredApiKey } from "@/lib/api";
+import { isMetaKey, metaOf, SettingsSectionShell } from "@/components/SettingsSectionShell";
 import EmotionLexiconEditor from "@/components/EmotionLexiconEditor";
-import GlossaryEditor from "@/components/GlossaryEditor";
-import LiveGlossaryManager from "@/components/LiveGlossaryManager";
+import GlossaryManagerDialog from "@/components/GlossaryManagerDialog";
 import PunctuationPauseEditor from "@/components/PunctuationPauseEditor";
-import type { GlossaryEntry } from "@/lib/types";
-
-type SettingsKey = "emotion-lexicon" | "glossary-seed" | "punctuation-pauses";
-
-// Ca 3 file du lieu deu mang theo metadata "_placeholder"/"_note" (xem
-// data/*.json) - khong hien thi cho nguoi dung sua nhung PHAI giu nguyen khi
-// luu lai, khong thi mat ghi chu goc cua team.
-function isMetaKey(key: string) {
-  return key.startsWith("_");
-}
-
-function metaOf(raw: Record<string, unknown>) {
-  return Object.fromEntries(Object.entries(raw).filter(([k]) => isMetaKey(k)));
-}
-
-// Chrome chung (tai/luu/dong/trang thai loi) cho ca 3 khoi cai dat - moi khoi
-// chi khac nhau o kieu du lieu T va giao dien sua T (children render-prop),
-// thay vi lap lai textarea + JSON.parse/stringify nhu truoc (khong than thien
-// nguoi dung khong ranh JSON).
-function SettingsSectionShell<T>({
-  label,
-  hint,
-  settingsKey,
-  toContent,
-  toRaw,
-  validate,
-  children,
-}: {
-  label: string;
-  hint: string;
-  settingsKey: SettingsKey;
-  toContent: (raw: Record<string, unknown>) => T;
-  toRaw: (content: T, raw: Record<string, unknown>) => Record<string, unknown>;
-  validate?: (content: T) => string | null;
-  children: (content: T, setContent: (next: T) => void) => ReactNode;
-}) {
-  const [raw, setRaw] = useState<Record<string, unknown> | null>(null);
-  const [content, setContent] = useState<T | null>(null);
-  const [status, setStatus] = useState<"idle" | "loading" | "saving" | "error">("idle");
-  const [error, setError] = useState<string | null>(null);
-
-  async function load() {
-    setStatus("loading");
-    setError(null);
-    try {
-      const data = await fetchSettingsFile(settingsKey);
-      setRaw(data);
-      setContent(toContent(data));
-      setStatus("idle");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Tải thất bại");
-      setStatus("error");
-    }
-  }
-
-  async function save() {
-    if (content === null) return;
-    const validationError = validate?.(content) ?? null;
-    if (validationError) {
-      setError(validationError);
-      setStatus("error");
-      return;
-    }
-    setStatus("saving");
-    setError(null);
-    try {
-      await uploadSettingsFile(settingsKey, toRaw(content, raw ?? {}));
-      setStatus("idle");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Lưu thất bại");
-      setStatus("error");
-    }
-  }
-
-  function close() {
-    setRaw(null);
-    setContent(null);
-    setStatus("idle");
-    setError(null);
-  }
-
-  return (
-    <div className="space-y-2 border-t pt-4 first:border-t-0 first:pt-0">
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-sm font-medium">{label}</p>
-          <p className="text-xs text-muted-foreground">{hint}</p>
-        </div>
-        {content === null && (
-          <Button size="sm" variant="outline" onClick={load} disabled={status === "loading"}>
-            {status === "loading" ? "Đang tải..." : "Tải để sửa"}
-          </Button>
-        )}
-      </div>
-      {content !== null && (
-        <div className="space-y-3">
-          {children(content, setContent)}
-          <div className="flex items-center gap-2">
-            <Button size="sm" onClick={save} disabled={status === "saving"}>
-              {status === "saving" ? "Đang lưu..." : "Lưu"}
-            </Button>
-            <Button size="sm" variant="ghost" onClick={close}>
-              Đóng
-            </Button>
-          </div>
-        </div>
-      )}
-      {error && <p className="text-xs text-destructive">{error}</p>}
-    </div>
-  );
-}
 
 // BYOK - moi nguoi dung tu nhap Gemini API key rieng cua ho (quyet dinh chot
 // 2026-09-10: "users will use their own API key, we use their key for their
@@ -212,22 +101,23 @@ export default function SettingsPanel() {
             )}
           </SettingsSectionShell>
 
-          <SettingsSectionShell<GlossaryEntry[]>
-            label="Glossary khởi tạo"
-            hint="Danh sách entry ban đầu cho Character/Terminology Glossary (nạp vào ChromaDB khi pipeline khởi động)."
-            settingsKey="glossary-seed"
-            toContent={(raw) => (Array.isArray(raw.entries) ? (raw.entries as GlossaryEntry[]) : [])}
-            toRaw={(content, raw) => ({ ...metaOf(raw), entries: content })}
-            validate={(content) =>
-              content.some((e) => !e.original_term.trim() || !e.canonical_form.trim())
-                ? "Có entry còn thiếu Tên gốc hoặc Tên chuẩn hoá."
-                : null
-            }
-          >
-            {(content, setContent) => <GlossaryEditor value={content} onChange={setContent} />}
-          </SettingsSectionShell>
-
-          <LiveGlossaryManager />
+          {/* 2026-09-14 - gop "Glossary khoi tao" + "Glossary dang dung" thanh
+              1 popup RIENG, lon hon, kieu tab (xem GlossaryManagerDialog.tsx) -
+              yeu cau nguoi dung: 2 khoi Glossary xep chong truoc day chiem het
+              khong gian cua popup Cai dat du lieu, va khong ro rang la 2 CHE
+              DO xem/sua khac nhau cua cung 1 khai niem thay vi 2 muc doc lap. */}
+          <div className="space-y-2 border-t pt-4 first:border-t-0 first:pt-0">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium">Glossary</p>
+                <p className="text-xs text-muted-foreground">
+                  Character/Terminology Glossary — danh sách khởi tạo (file JSON tĩnh) và bảng đang
+                  dùng thời gian thực (ChromaDB), quản lý trong 1 cửa sổ riêng.
+                </p>
+              </div>
+              <GlossaryManagerDialog />
+            </div>
+          </div>
 
           <SettingsSectionShell<Record<string, number>>
             label="Bảng ngắt nghỉ theo dấu câu"

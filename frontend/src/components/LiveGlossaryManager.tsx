@@ -160,17 +160,21 @@ export default function LiveGlossaryManager() {
   }, []);
 
   return (
-    <div className="space-y-2 border-t pt-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-sm font-medium">Glossary đang dùng (thời gian thực)</p>
-          <p className="text-xs text-muted-foreground">
-            Đọc/ghi trực tiếp trên ChromaDB — nơi các thuật ngữ đã &ldquo;Duyệt&rdquo; thực sự được
-            lưu (khác với &ldquo;Glossary khởi tạo&rdquo; ở trên, chỉ là file seed tĩnh).
-          </p>
-        </div>
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs text-muted-foreground">
+          Đọc/ghi trực tiếp trên ChromaDB — nơi các thuật ngữ đã &ldquo;Duyệt&rdquo; (từ popup
+          &ldquo;Thuật ngữ mới phát hiện&rdquo;) thực sự được lưu. Khác với tab &ldquo;Khởi
+          tạo&rdquo;, chỉ là file seed tĩnh nạp 1 lần lúc pipeline khởi động.
+        </p>
         {entries === null && (
-          <Button size="sm" variant="outline" onClick={load} disabled={status === "loading"}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={load}
+            disabled={status === "loading"}
+            className="shrink-0"
+          >
             {status === "loading" ? "Đang tải..." : "Tải để xem"}
           </Button>
         )}
