@@ -31,6 +31,7 @@ RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 COPY voxdirector /app/voxdirector
 COPY pipeline /app/pipeline
 COPY data /app/data
+COPY scripts /app/scripts
 COPY backend/app /app/backend/app
 # COPY cho voice model files (Piper .onnx da bi xoa 2026-09-11) se quay lai
 # day khi Step 2 xac dinh VieNeu-TTS luu voice preset o dau.

@@ -137,7 +137,43 @@ def concat_with_silence(ffmpeg, wav_files, silence_duration, output_path):
     )
 
 def mix_bgm(ffmpeg, voice_path, bgm_path, output_path, bgm_volume=0.05):
-    cmd = [ffmpeg, "-y", "-i", voice_path, "-stream_loop", "-1", "-i", bgm_path, "-filter_complex", f"[1:a]volume={bgm_volume}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=3", "-c:a", "pcm_s16le", output_path]
+    """Tron nhac nen (bgm_path) vao duoi giong doc chinh (voice_path), am
+    luong bgm_volume (0-1). BGM duoc LAP VO HAN qua "-stream_loop -1" tren
+    input cua no (ap dung cho input NGAY SAU tham so nay trong dong lenh
+    ffmpeg - vi tri "-stream_loop -1" phai dat TRUOC "-i bgm_path" moi dung,
+    khong phai truoc "-i voice_path") roi amix "duration=first" cat do dai
+    ket qua khop CHINH XAC do dai voice_path - ket hop 2 co che nay GIAI
+    QUYET DUOC CA 2 truong hop nguoi dung yeu cau: bgm ngan hon audio chinh
+    (lap lai vo han, du dai) VA bgm dai hon audio chinh (bi cat bot, vi
+    duration=first khong quan tam bgm con du dai hay khong).
+
+    2026-09-14 - THEM aresample=async=1 tren nhanh bgm (TRUOC ban sua nay
+    KHONG co) - phong truong hop file nhac nen nguoi dung tu tai len co sample
+    rate KHAC voice_path (vd. nhac MP3 44.1kHz trong khi VieNeu-TTS xuat
+    48kHz) khien amix loi/tron sai am luong; aresample o day bao ffmpeg tu
+    dong quy doi nhanh bgm ve cung sample rate voi nhanh voice truoc khi
+    tron, khong yeu cau nguoi goi tu biet truoc sample rate that su cua
+    voice_path.
+
+    THEM :normalize=0 tren amix (TRUOC ban sua nay KHONG co - XAC NHAN CO
+    THAT qua do truc tiep 2026-09-14: RMS giong doc giam tu 0.1022 xuong
+    0.0592 SAU KHI tron, dung mot nua) - amix mac dinh normalize=1 (hanh vi
+    goc cua ffmpeg) TU DONG chia deu bien do CA HAI nguon (giong doc LAN bgm)
+    theo 1/so_nguon de tranh clipping, nghia la giong doc chinh bi ha am
+    luong xuong CON MOT NUA moi khi co bgm - hoan toan nguoc voi y nghia
+    "nhac NEN" (phai giu nguyen am luong giong doc, chi THEM 1 lop bgm nho
+    ben duoi). normalize=0 tat co che tu dong nay, giu giong doc o dung am
+    luong goc, chi bgm (da duoc dieu chinh rieng qua volume=bgm_volume) la
+    thay doi."""
+    cmd = [
+        ffmpeg, "-y",
+        "-i", voice_path,
+        "-stream_loop", "-1", "-i", bgm_path,
+        "-filter_complex",
+        f"[1:a]aresample=async=1,volume={bgm_volume}[bg];"
+        f"[0:a][bg]amix=inputs=2:duration=first:dropout_transition=3:normalize=0",
+        "-c:a", "pcm_s16le", output_path,
+    ]
     subprocess.run(cmd, capture_output=True, check=True)
     return output_path
 

@@ -183,6 +183,11 @@ export type WsMessage = ProgressMessage | ResultMessage | ErrorMessage;
 export interface AdvancedOptionsState {
   backgroundImage: File | null;
   backgroundMusic: File | null;
+  // 2026-09-14 - BGM khong hoat dong truoc day vi chi co UI thu file, chua
+  // tung duoc upload/tron - xem POST /api/background-music/{job_id} +
+  // voxdirector.orchestrator.rebuild_final_audio(). 0-1, mac dinh 0.05 khop
+  // gia tri mac dinh cu cua pipeline.audio_postprocess.mix_bgm().
+  bgmVolume: number;
   pauseDurationMs: number;
   burnSubtitles: boolean;
   qaEnabled: boolean;

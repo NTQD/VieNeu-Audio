@@ -43,3 +43,8 @@ jiwer>=4.0.0
 # (2026-09-10): "Numba needs NumPy 2.3 or less. Got NumPy 2.5." Ghim tran
 # de tranh regression tuong tu trong container.
 numpy<=2.3
+
+# scripts/export_chromadb_glossary.py (2026-09-14) - xuat glossary ra
+# CSV/HTML de xem/kiem tra ngoai UI web. Khong dung o backend/pipeline chinh,
+# chi can cho script nay.
+pandas>=2.2.0

@@ -22,7 +22,7 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -339,6 +339,71 @@ def approve_glossary_term(req: GlossaryApproveRequest):
     return {"status": "ok"}
 
 
+# 2026-09-14 - "Glossary dang dung" (khac voi "Glossary khoi tao" -
+# data/glossary_seed.json, file JSON tinh o Cai dat du lieu): endpoint nay
+# doc/ghi TRUC TIEP tren ChromaDB - CHINH LA noi POST /api/glossary/approve o
+# tren da ghi vao. Truoc ban sua nay, khong co cach nao xem lai entry da
+# duyet o dau ca (Cai dat du lieu chi hien seed file tinh) - nguoi dung bao
+# cao "duyet xong nhung khong thay dau" la vi ho dang nhin sai cho, khong
+# phai loi ghi du lieu (approve_new_entries() van ghi dung ChromaDB nhu cu).
+@app.get("/api/glossary")
+def list_glossary_entries():
+    from voxdirector.glossary.store import list_entries
+
+    return {"entries": list_entries()}
+
+
+class GlossaryEntryRequest(BaseModel):
+    original_term: str
+    entity_type: str
+    canonical_form: str
+    pronunciation_note: str | None = None
+    first_seen_chapter: int | None = None
+
+
+@app.post("/api/glossary")
+def upsert_glossary_entry(req: GlossaryEntryRequest):
+    """Them/sua 1 entry TRUC TIEP trong glossary dang dung (khong qua luong
+    "candidate can duyet" nhu /api/glossary/approve) - dung khi nguoi dung tu
+    go 1 thuat ngu moi qua Glossary manager, hoac sua 1 entry da co san."""
+    from voxdirector.glossary.schema import GlossaryEntry
+    from voxdirector.glossary.store import add_entry
+
+    if req.entity_type not in _VALID_GLOSSARY_ENTITY_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"entity_type không hợp lệ: {req.entity_type!r} (phải là character/place/term)",
+        )
+    if not req.original_term.strip() or not req.canonical_form.strip():
+        raise HTTPException(status_code=400, detail="original_term và canonical_form không được để trống")
+    add_entry(GlossaryEntry(
+        original_term=req.original_term,
+        entity_type=req.entity_type,
+        canonical_form=req.canonical_form,
+        pronunciation_note=req.pronunciation_note,
+        first_seen_chapter=req.first_seen_chapter,
+    ))
+    return {"status": "ok"}
+
+
+@app.delete("/api/glossary/{original_term}")
+def delete_glossary_entry(original_term: str):
+    from voxdirector.glossary.store import delete_entry
+
+    deleted = delete_entry(original_term)
+    return {"status": "ok", "deleted": deleted}
+
+
+@app.get("/api/glossary/suggest-label")
+def suggest_glossary_label(term: str):
+    """Goi y entity_type theo tu khoa (khong dung Gemini - xem
+    voxdirector/glossary/label_suggestion.py) cho 1 term nguoi dung dang go
+    trong Glossary manager, truoc khi ho tu chon/xac nhan loai chinh xac."""
+    from voxdirector.glossary.label_suggestion import suggest_entity_type
+
+    return {"term": term, "suggested_entity_type": suggest_entity_type(term)}
+
+
 @app.post("/api/background-image/{job_id}")
 async def upload_background_image(job_id: str, file: UploadFile = File(...)):
     """2026-09-12 - nguoi dung yeu cau "dieu kien de nut Xuat Video hoat dong
@@ -359,6 +424,37 @@ async def upload_background_image(job_id: str, file: UploadFile = File(...)):
     with open(image_path, "wb") as f:
         f.write(await file.read())
     job["background_image_path"] = str(image_path)
+    return {"status": "ok"}
+
+
+@app.post("/api/background-music/{job_id}")
+async def upload_background_music(job_id: str, file: UploadFile = File(...), volume: float = Form(0.05)):
+    """2026-09-14 - Nhac nen (BGM). Cung mo hinh voi upload_background_image()
+    o tren: upload SAU /api/submit, TRUOC khi mo WebSocket - ws_progress() chi
+    tron BGM vao final.wav NEU job["background_music_path"] da co san luc no
+    chay toi buoc ghep audio (xem voxdirector.orchestrator.rebuild_final_audio()).
+
+    XAC NHAN CO THAT qua doc code (khong phai gia dinh): pipeline.audio_postprocess.mix_bgm()
+    da duoc VIET SAN tu truoc (dung cho CLI doc lap cua chinh file do) nhung
+    CHUA TUNG duoc goi tu backend/frontend - hoan toan giong tinh trang
+    render_video() truoc ban sua 2026-09-12 (docstring dau file). "BGM merging
+    khong hoat dong" nguoi dung bao cao la vi thieu chinh endpoint nay + lan
+    goi ket noi vao ws_progress(), KHONG phai loi trong logic tron am cua
+    mix_bgm() (logic do van dung, xem chu thich cua no).
+
+    volume: he so am luong BGM (0-1, form field kem file) - nguoi dung dieu
+    chinh qua slider o AdvancedOptions.tsx, mac dinh 0.05 (rat nho, dung y
+    "nen am thanh" khong lan at giong doc)."""
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job_id không tồn tại")
+
+    ext = os.path.splitext(file.filename or "")[1] or ".mp3"
+    music_path = job["job_dir"] / f"background_music{ext}"
+    with open(music_path, "wb") as f:
+        f.write(await file.read())
+    job["background_music_path"] = str(music_path)
+    job["bgm_volume"] = volume
     return {"status": "ok"}
 
 
@@ -549,16 +645,19 @@ async def ws_progress(websocket: WebSocket, job_id: str):
         # Ghep audio cac chuong thanh 1 file duy nhat cho ca job (khoang lang
         # 1.0s co dinh giua chuong - khong phai gia tri chot trong spec, chi
         # la lua chon hop ly cho pham vi test noi bo nay). Dung chung ham voi
-        # /api/rerender (assemble_final_audio) - xem docstring ham do de biet
-        # ly do BAT BUOC phai goi lai sau moi lan re-render 1 segment.
+        # /api/rerender (rebuild_final_audio, tron them BGM neu co - xem
+        # docstring ham do) - xem docstring de biet ly do BAT BUOC phai goi
+        # lai (KHONG duoc goi assemble_final_audio() truc tiep) sau moi lan
+        # re-render 1 segment/QA auto-retry.
         from pipeline.vieneu_tts import get_sample_rate
-        from voxdirector.orchestrator import assemble_final_audio
+        from voxdirector.orchestrator import rebuild_final_audio
 
         sample_rate = get_sample_rate(voice_id)
         final_audio_path = str(job_dir / "final.wav")
         _assemble_start = time.monotonic()
         await asyncio.to_thread(
-            assemble_final_audio, str(job_dir), len(chapter_results), sample_rate, final_audio_path,
+            rebuild_final_audio, str(job_dir), len(chapter_results), sample_rate, final_audio_path,
+            job.get("background_music_path"), job.get("bgm_volume", 0.05),
         )
         assemble_duration_s = time.monotonic() - _assemble_start
         job["final_audio_path"] = final_audio_path
@@ -632,15 +731,18 @@ async def ws_progress(websocket: WebSocket, job_id: str):
                     any_chapter_changed = True
             qa_duration_s = time.monotonic() - _qa_start
 
-            # assemble_final_audio() da chay 1 lan TRUOC khoi QA nay (xem
-            # ben tren) - neu retry vua ghi de {prefix}_merged.wav cua bat ky
+            # rebuild_final_audio() da chay 1 lan TRUOC khoi QA nay (xem ben
+            # tren) - neu retry vua ghi de {prefix}_merged.wav cua bat ky
             # chuong nao, final.wav cu se KHONG con phan anh dung audio da
             # sua, dung y het loi "nut Render lai khong hoat dong" ma chinh
             # assemble_final_audio() da tung fix mot lan (xem docstring ham
-            # do) - phai goi lai o day.
+            # do) - phai goi lai o day. Dung rebuild_final_audio() (khong
+            # phai assemble_final_audio() truc tiep) de BGM (neu co) duoc
+            # tron LAI, khong bi mat sau khi QA sua audio.
             if any_chapter_changed:
                 await asyncio.to_thread(
-                    assemble_final_audio, str(job_dir), len(chapter_results), sample_rate, final_audio_path,
+                    rebuild_final_audio, str(job_dir), len(chapter_results), sample_rate, final_audio_path,
+                    job.get("background_music_path"), job.get("bgm_volume", 0.05),
                 )
 
             qa_report = {
@@ -862,11 +964,13 @@ def rerender_segment(req: RerenderRequest):
     dung chapter_dir + chunk_index tuong ung roi goi orchestrator.rerender_chunk().
 
     2026-09-12: sau khi rerender_chunk() cap nhat xong {prefix}_merged.wav
-    cua DUNG chuong chua segment, PHAI goi lai assemble_final_audio() de ghep
+    cua DUNG chuong chua segment, PHAI goi lai rebuild_final_audio() de ghep
     lai final.wav cua CA JOB - neu khong, final.wav ma /api/audio/{job_id}
     phuc vu van la ban ghep CU, khong bao gio phan anh doan vua render lai
     (day CHINH LA loi "nut Render lai khong hoat dong" nguoi dung bao cao -
-    xem docstring assemble_final_audio() trong orchestrator.py).
+    xem docstring rebuild_final_audio() trong orchestrator.py). Dung
+    rebuild_final_audio() (khong phai assemble_final_audio() truc tiep) de
+    BGM (neu job co dung) duoc tron LAI thay vi bi mat sau moi lan render lai.
 
     LUU Y (gioi han con lai, chua fix): chi re-render lai audio, KHONG re-chay
     lai toan bo file .srt ghep (final.srt) - do dai chunk sau khi re-render co
@@ -874,7 +978,7 @@ def rerender_segment(req: RerenderRequest):
     "local end-to-end test" hien tai."""
     from fastapi import HTTPException
     from pipeline.vieneu_tts import get_sample_rate
-    from voxdirector.orchestrator import assemble_final_audio, rerender_chunk
+    from voxdirector.orchestrator import rebuild_final_audio, rerender_chunk
 
     job = JOBS.get(req.job_id)
     if not job:
@@ -895,7 +999,10 @@ def rerender_segment(req: RerenderRequest):
             rerender_chunk(str(chapter_dir), seg_id - 1)
             if "final_audio_path" in job:
                 sample_rate = manifest.get("sample_rate") or get_sample_rate(manifest["voice_id"])
-                assemble_final_audio(str(job_dir), num_chapters, sample_rate, job["final_audio_path"])
+                rebuild_final_audio(
+                    str(job_dir), num_chapters, sample_rate, job["final_audio_path"],
+                    job.get("background_music_path"), job.get("bgm_volume", 0.05),
+                )
             return {"status": "ok", "chapter": ci + 1, "chunk_index": seg_id - 1}
         seg_id -= n_chunks
 

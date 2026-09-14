@@ -7,7 +7,15 @@ import NewTermConfirmationPanel from "@/components/NewTermConfirmationPanel";
 import SettingsPanel from "@/components/SettingsPanel";
 import Logo from "@/components/Logo";
 import ThemeToggle from "@/components/ThemeToggle";
-import { approveNewTerm, fetchVoicePresets, getStoredApiKey, submitText, uploadBackgroundImage, wsUrlFor } from "@/lib/api";
+import {
+  approveNewTerm,
+  fetchVoicePresets,
+  getStoredApiKey,
+  submitText,
+  uploadBackgroundImage,
+  uploadBackgroundMusic,
+  wsUrlFor,
+} from "@/lib/api";
 import type {
   AdvancedOptionsState,
   NewTermCandidate,
@@ -26,6 +34,7 @@ export default function Home() {
   const [advanced, setAdvanced] = useState<AdvancedOptionsState>({
     backgroundImage: null,
     backgroundMusic: null,
+    bgmVolume: 0.05,
     pauseDurationMs: 500,
     burnSubtitles: true,
     qaEnabled: false,
@@ -73,6 +82,19 @@ export default function Home() {
       } catch (err) {
         console.error(err);
         setSubmitError(err instanceof Error ? err.message : "Tải ảnh nền thất bại");
+        setWorkArea({ kind: "empty" });
+        return;
+      }
+    }
+
+    // Nhac nen (neu co) cung phai upload xong TRUOC khi mo WS, cung ly do
+    // voi anh nen o tren - xem POST /api/background-music/{job_id}.
+    if (advanced.backgroundMusic) {
+      try {
+        await uploadBackgroundMusic(submitResult.job_id, advanced.backgroundMusic, advanced.bgmVolume);
+      } catch (err) {
+        console.error(err);
+        setSubmitError(err instanceof Error ? err.message : "Tải nhạc nền thất bại");
         setWorkArea({ kind: "empty" });
         return;
       }

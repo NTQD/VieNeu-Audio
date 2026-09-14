@@ -1,4 +1,4 @@
-import type { NewTermCandidate, SubmitResponse, VoicePresets } from "./types";
+import type { GlossaryEntry, NewTermCandidate, SubmitResponse, VoicePresets } from "./types";
 
 // "" (rong) = dung DUONG DAN TUONG DOI, tuc goi ve CUNG origin da tai trang
 // - dung cho che do Docker Compose that (Section 12 cua spec): trinh duyet
@@ -59,6 +59,21 @@ export async function uploadBackgroundImage(jobId: string, file: File): Promise<
     body: formData,
   });
   if (!res.ok) throw new Error(await extractErrorMessage(res, "Tải ảnh nền thất bại"));
+}
+
+// 2026-09-14 - nhac nen (BGM). Cung mo hinh voi uploadBackgroundImage() o
+// tren - da thu file tu truoc (AdvancedOptions.tsx) nhung CHUA TUNG duoc goi
+// ham nay (khong ton tai) nen file luon bi bo qua, khong bao gio toi duoc
+// backend. volume gui kem nhu 1 form field (0-1, tu slider AdvancedOptions.tsx).
+export async function uploadBackgroundMusic(jobId: string, file: File, volume: number): Promise<void> {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("volume", String(volume));
+  const res = await fetch(`${API_BASE_URL}/api/background-music/${jobId}`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) throw new Error(await extractErrorMessage(res, "Tải nhạc nền thất bại"));
 }
 
 export async function fetchVoicePresets(): Promise<VoicePresets> {
@@ -159,6 +174,45 @@ export async function approveNewTerm(candidate: NewTermCandidate): Promise<void>
     body: JSON.stringify({ term: candidate.term, entity_type: candidate.entity_type }),
   });
   if (!res.ok) throw new Error(await extractErrorMessage(res, "Duyệt thuật ngữ thất bại"));
+}
+
+// 2026-09-14 - Glossary "dang dung" (khac voi Glossary khoi tao = file JSON
+// tinh, xem fetchSettingsFile/uploadSettingsFile) - doc/ghi TRUC TIEP tren
+// ChromaDB, CHINH LA noi approveNewTerm() da ghi vao. Sinh ra de fix bao cao
+// "duyệt xong nhưng không thấy đâu" - nguoi dung truoc day chi co cach xem
+// Glossary khoi tao (seed file tinh), khong co cach nao xem lai nhung gi
+// THAT SU da duoc duyet/Beta dang tra cuu.
+export async function fetchLiveGlossaryEntries(): Promise<GlossaryEntry[]> {
+  const res = await fetch(`${API_BASE_URL}/api/glossary`);
+  if (!res.ok) throw new Error(`Không tải được glossary đang dùng (${res.status})`);
+  const data = await res.json();
+  return data.entries as GlossaryEntry[];
+}
+
+export async function upsertLiveGlossaryEntry(entry: GlossaryEntry): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/glossary`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(entry),
+  });
+  if (!res.ok) throw new Error(await extractErrorMessage(res, "Lưu entry thất bại"));
+}
+
+export async function deleteLiveGlossaryEntry(originalTerm: string): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/glossary/${encodeURIComponent(originalTerm)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(await extractErrorMessage(res, "Xoá entry thất bại"));
+}
+
+// Goi y entity_type theo tu khoa (khong dung Gemini - xem
+// voxdirector/glossary/label_suggestion.py) khi nguoi dung go 1 term moi ma
+// chua tu chon loai.
+export async function suggestGlossaryLabel(term: string): Promise<GlossaryEntry["entity_type"]> {
+  const res = await fetch(`${API_BASE_URL}/api/glossary/suggest-label?term=${encodeURIComponent(term)}`);
+  if (!res.ok) throw new Error(`Không gợi ý được nhãn (${res.status})`);
+  const data = await res.json();
+  return data.suggested_entity_type as GlossaryEntry["entity_type"];
 }
 
 // Step 10 cua build order - "Segment re-render endpoint". Tra ve audio_url

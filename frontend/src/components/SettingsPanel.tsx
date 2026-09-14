@@ -14,6 +14,7 @@ import { cn } from "cn";
 import { fetchSettingsFile, getStoredApiKey, setStoredApiKey, uploadSettingsFile } from "@/lib/api";
 import EmotionLexiconEditor from "@/components/EmotionLexiconEditor";
 import GlossaryEditor from "@/components/GlossaryEditor";
+import LiveGlossaryManager from "@/components/LiveGlossaryManager";
 import PunctuationPauseEditor from "@/components/PunctuationPauseEditor";
 import type { GlossaryEntry } from "@/lib/types";
 
@@ -225,6 +226,8 @@ export default function SettingsPanel() {
           >
             {(content, setContent) => <GlossaryEditor value={content} onChange={setContent} />}
           </SettingsSectionShell>
+
+          <LiveGlossaryManager />
 
           <SettingsSectionShell<Record<string, number>>
             label="Bảng ngắt nghỉ theo dấu câu"

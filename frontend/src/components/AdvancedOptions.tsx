@@ -62,6 +62,28 @@ export default function AdvancedOptions({ value, onChange }: Props) {
               onChange({ ...value, backgroundMusic: e.target.files?.[0] ?? null })
             }
           />
+          {value.backgroundMusic && (
+            <div className="space-y-1.5 pt-1">
+              <div className="flex items-center justify-between">
+                <Label>Âm lượng nhạc nền</Label>
+                <span className="text-xs text-muted-foreground font-mono">
+                  {Math.round(value.bgmVolume * 100)}%
+                </span>
+              </div>
+              <Slider
+                min={0}
+                max={0.5}
+                step={0.01}
+                value={[value.bgmVolume]}
+                onValueChange={(v) =>
+                  onChange({ ...value, bgmVolume: Array.isArray(v) ? v[0] : v })
+                }
+              />
+              <p className="text-xs text-muted-foreground">
+                Nhạc nền sẽ tự động lặp lại nếu ngắn hơn, hoặc bị cắt bớt nếu dài hơn giọng đọc.
+              </p>
+            </div>
+          )}
         </div>
 
         <div className="space-y-1.5">

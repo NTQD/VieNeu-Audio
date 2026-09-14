@@ -324,6 +324,47 @@ def assemble_final_audio(
     return final_audio_path
 
 
+def rebuild_final_audio(
+    job_dir: str, num_chapters: int, sample_rate: int, final_audio_path: str,
+    background_music_path: str | None = None, bgm_volume: float = 0.05,
+    inter_chapter_gap_s: float = 1.0,
+) -> str:
+    """2026-09-14 - Lop bao boc quanh assemble_final_audio() de THEM nhac nen
+    (BGM, tuy chon) - PHAI dung ham nay thay vi goi assemble_final_audio()
+    truc tiep o BAT KY noi nao trong backend/app/main.py tu nay ve sau.
+
+    LY DO (xac nhan CO THAT qua doc code, khong phai gia dinh): backend goi
+    assemble_final_audio() ghi thang vao final_audio_path o 3 CHO KHAC NHAU -
+    (1) ngay sau khi xu ly xong tat ca chuong, (2) sau khi Gamma QA auto-retry
+    sua duoc mot vai chunk, (3) sau moi lan /api/rerender. Neu BGM duoc tron
+    truc tiep vao final_audio_path o (1) roi (2)/(3) lai goi assemble_final_audio()
+    THANG vao CUNG duong dan do, ban co BGM se bi GHI DE AM THAM boi 1 ban
+    khong co BGM (assemble_final_audio() chi ghep audio giong doc, khong biet
+    gi ve BGM ca) - dung mo hinh loi "nut Render lai khong hoat dong" ma
+    chinh assemble_final_audio() da tung fix mot lan, chi khac o BGM thay vi
+    o doan re-render.
+
+    Fix: ghi ban CHUA co BGM ra 1 file NOI BO rieng ("<final_audio_path>.raw.wav",
+    khong bao gio duoc /api/audio/{job_id} hay render_video() doc truc tiep),
+    roi MOI tron BGM (neu co) tu ban do ra DUNG final_audio_path - goi lai ham
+    nay (thay vi assemble_final_audio()) o CA 3 noi tren se tu dong ap lai BGM
+    moi lan audio duoc ghep/sua lai, khong con bi mat ngam nua."""
+    import shutil
+
+    raw_path = f"{final_audio_path}.raw.wav"
+    assemble_final_audio(job_dir, num_chapters, sample_rate, raw_path, inter_chapter_gap_s=inter_chapter_gap_s)
+
+    if background_music_path and os.path.isfile(background_music_path):
+        from pipeline.audio_postprocess import get_ffmpeg, mix_bgm
+
+        ffmpeg = get_ffmpeg()
+        mix_bgm(ffmpeg, raw_path, background_music_path, final_audio_path, bgm_volume=bgm_volume)
+    else:
+        shutil.copy(raw_path, final_audio_path)
+
+    return final_audio_path
+
+
 def _load_chapter_manifest(chapter_dir: str) -> dict:
     """Doc file {prefix}_manifest.json cua 1 chuong - dung chung boi
     rerender_chunk()/_resynthesize_chunk_audio()/_rebuild_chapter_merged_audio()
