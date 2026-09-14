@@ -1,163 +1,176 @@
 "use client";
 
-import { useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { useRef, useState } from "react";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Plus, Trash2, X } from "lucide-react";
+import TableToolbar from "@/components/TableToolbar";
+import type { SaveController } from "@/components/SettingsSectionShell";
 
 // 3 the duy nhat VieNeu-TTS ho tro chinh thuc (xem README "Emotion cues
 // (experimental)" + data/emotion_lexicon.json._note) - hien thi lam goi y
 // bam-de-them, khong ep buoc vi nguoi dung van co the tu go the khac de thu.
 const SUGGESTED_TAGS = ["[cười]", "[thở dài]", "[hắng giọng]"];
 
+interface Row {
+  _id: number;
+  label: string;
+  tag: string;
+}
+
 interface Props {
   value: Record<string, string[]>;
   onChange: (next: Record<string, string[]>) => void;
+  table: SaveController;
 }
 
-export default function EmotionLexiconEditor({ value, onChange }: Props) {
-  const [pendingTag, setPendingTag] = useState<Record<string, string>>({});
-  const [newLabel, setNewLabel] = useState("");
+function rowsFromValue(value: Record<string, string[]>): Row[] {
+  const rows: Row[] = [];
+  let id = 0;
+  for (const label of Object.keys(value)) {
+    const tags = value[label] ?? [];
+    if (tags.length === 0) rows.push({ _id: id++, label, tag: "" });
+    else for (const tag of tags) rows.push({ _id: id++, label, tag });
+  }
+  return rows;
+}
 
-  const labels = Object.keys(value);
+function rowsToValue(rows: Row[]): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const { label, tag } of rows) {
+    const key = label.trim();
+    if (!key) continue;
+    if (!(key in out)) out[key] = [];
+    const t = tag.trim();
+    if (t && !out[key].includes(t)) out[key].push(t);
+  }
+  return out;
+}
 
-  function addTag(label: string, rawTag: string) {
-    const tag = rawTag.trim();
-    if (!tag) return;
-    const current = value[label] ?? [];
-    if (current.includes(tag)) return;
-    onChange({ ...value, [label]: [...current, tag] });
-    setPendingTag((p) => ({ ...p, [label]: "" }));
+// 2026-09-15 - Truoc day day la 1 danh sach The (Card) theo TUNG nhan cam
+// xuc, moi Card co: 1 nut Xoa nhan rieng, 1 o nhap + nut Them-tu RIENG, va
+// tung tu/the ben trong lai co 1 nut X rieng de xoa - qua nhieu bo nut Them/
+// Xoa lap lai, chi hop ly khi so nhan/tu con it (dung yeu cau nguoi dung can
+// sua). Gio GOM PHANG (flatten) thanh 1 BANG duy nhat, moi dong la 1 cap
+// (nhan, tu/the) - 1 nhan co N tu se la N dong CUNG nhan do; nhan chua co tu
+// nao la 1 dong voi o "Tu/the" rong. Them/Xoa/Luu dung chung 1 TableToolbar
+// (xem TableToolbar.tsx) cho CA nhan lan tu, khong con phan biet 2 co che
+// rieng nua - xoa dong cuoi cung cua 1 nhan tuong duong xoa ca nhan do.
+//
+// `_id` la state NOI BO on dinh (khong phai chinh "nhan"/"tu" lam id) vi
+// nguoi dung dang go dep nhan/tu co the trung/rong tam thoi luc them dong
+// moi - dung chuoi dang go lam id se gay xung dot React key/mat selection.
+export default function EmotionLexiconEditor({ value, onChange, table }: Props) {
+  const [rows, setRows] = useState<Row[]>(() => rowsFromValue(value));
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const nextId = useRef(rows.length);
+
+  function commit(next: Row[]) {
+    setRows(next);
+    onChange(rowsToValue(next));
   }
 
-  function removeTag(label: string, tag: string) {
-    onChange({ ...value, [label]: (value[label] ?? []).filter((t) => t !== tag) });
+  function updateRow(id: number, patch: Partial<Row>) {
+    commit(rows.map((r) => (r._id === id ? { ...r, ...patch } : r)));
   }
 
-  function addLabel() {
-    const label = newLabel.trim();
-    if (!label || label in value) return;
-    onChange({ ...value, [label]: [] });
-    setNewLabel("");
+  function addRow(prefill?: Partial<Row>) {
+    const row: Row = { _id: nextId.current++, label: "", tag: "", ...prefill };
+    commit([...rows, row]);
   }
 
-  function removeLabel(label: string) {
-    const next = { ...value };
-    delete next[label];
-    onChange(next);
+  function deleteSelected() {
+    commit(rows.filter((r) => !selected.has(r._id)));
+    setSelected(new Set());
   }
+
+  function toggleAll(checked: boolean) {
+    setSelected(checked ? new Set(rows.map((r) => r._id)) : new Set());
+  }
+
+  function toggleRow(id: number, checked: boolean) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  const usedTags = new Set(rows.map((r) => r.tag).filter(Boolean));
+  const suggestions = SUGGESTED_TAGS.filter((t) => !usedTags.has(t));
 
   return (
     <div className="space-y-3">
       <p className="text-xs text-muted-foreground">
-        Mỗi nhãn cảm xúc ánh xạ tới danh sách từ/thẻ mà Beta sẽ chọn 1 khi chèn. Sửa danh sách từ
-        của 1 nhãn có sẵn có hiệu lực ngay sau khi lưu; <strong>thêm hoặc xoá cả một nhãn cần khởi
-        động lại backend</strong> mới có hiệu lực với Alpha/Beta.
+        Mỗi dòng là 1 cặp Nhãn → Từ/thẻ mà Beta sẽ chọn 1 khi chèn (1 nhãn có thể có nhiều dòng).
+        Sửa từ/thẻ của 1 nhãn có sẵn có hiệu lực ngay sau khi lưu; <strong>thêm hoặc xoá cả một
+        nhãn (xoá hết các dòng của nhãn đó) cần khởi động lại backend</strong> mới có hiệu lực với
+        Alpha/Beta.
       </p>
 
-      {labels.length === 0 && (
+      <TableToolbar
+        totalCount={rows.length}
+        selectedCount={selected.size}
+        onToggleAll={toggleAll}
+        onAdd={() => addRow()}
+        addLabel="Thêm dòng"
+        onDeleteSelected={deleteSelected}
+        onSave={table.save}
+        saving={table.status === "saving"}
+        error={table.error}
+      />
+
+      {suggestions.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">Gợi ý đã xác minh:</span>
+          {suggestions.map((tag) => (
+            <button
+              key={tag}
+              type="button"
+              onClick={() => addRow({ tag })}
+              className="rounded-full border border-dashed px-2 py-0.5 font-mono text-[0.7rem] text-muted-foreground hover:bg-muted"
+            >
+              + {tag}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {rows.length === 0 && (
         <p className="text-xs italic text-muted-foreground">Chưa có nhãn cảm xúc nào.</p>
       )}
 
-      <div className="space-y-2">
-        {labels.map((label) => {
-          const tags = value[label] ?? [];
-          const suggestions = SUGGESTED_TAGS.filter((t) => !tags.includes(t));
-          return (
-            <Card key={label} size="sm">
-              <CardHeader className="flex-row items-center justify-between gap-2">
-                <CardTitle className="font-mono text-sm">{label}</CardTitle>
-                <CardAction>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => removeLabel(label)}
-                    title="Xoá nhãn (cần khởi động lại backend)"
-                    aria-label={`Xoá nhãn ${label}`}
-                  >
-                    <Trash2 />
-                  </Button>
-                </CardAction>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <div className="flex flex-wrap gap-1.5">
-                  {tags.length === 0 && (
-                    <span className="text-xs italic text-muted-foreground">Chưa có từ nào</span>
-                  )}
-                  {tags.map((tag) => (
-                    <Badge key={tag} variant="secondary" className="gap-1">
-                      <span className="font-mono">{tag}</span>
-                      <button
-                        type="button"
-                        onClick={() => removeTag(label, tag)}
-                        aria-label={`Xoá ${tag}`}
-                        className="rounded-full hover:text-destructive"
-                      >
-                        <X className="size-3" />
-                      </button>
-                    </Badge>
-                  ))}
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <Input
-                    value={pendingTag[label] ?? ""}
-                    onChange={(e) => setPendingTag((p) => ({ ...p, [label]: e.target.value }))}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        addTag(label, pendingTag[label] ?? "");
-                      }
-                    }}
-                    placeholder="Thêm từ/thẻ..."
-                    className="h-7 text-xs"
-                  />
-                  <Button
-                    size="icon-sm"
-                    variant="outline"
-                    onClick={() => addTag(label, pendingTag[label] ?? "")}
-                    aria-label={`Thêm từ vào nhãn ${label}`}
-                  >
-                    <Plus />
-                  </Button>
-                </div>
-                {suggestions.length > 0 && (
-                  <div className="flex flex-wrap gap-1">
-                    {suggestions.map((tag) => (
-                      <button
-                        key={tag}
-                        type="button"
-                        onClick={() => addTag(label, tag)}
-                        className="rounded-full border border-dashed px-2 py-0.5 font-mono text-[0.7rem] text-muted-foreground hover:bg-muted"
-                      >
-                        + {tag}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
-
-      <div className="flex items-center gap-1.5 border-t pt-2">
-        <Input
-          value={newLabel}
-          onChange={(e) => setNewLabel(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              addLabel();
-            }
-          }}
-          placeholder="Tên nhãn mới (vd: gian_du)"
-          className="h-7 text-xs"
-        />
-        <Button size="sm" variant="outline" onClick={addLabel}>
-          <Plus /> Thêm nhãn
-        </Button>
+      <div className="space-y-1.5">
+        {rows.length > 0 && (
+          <div className="flex items-center gap-2 px-1 text-[0.7rem] text-muted-foreground">
+            <span className="w-4 shrink-0" />
+            <span className="w-36 shrink-0">Nhãn</span>
+            <span className="flex-1">Từ / thẻ</span>
+          </div>
+        )}
+        {rows.map((row) => (
+          <div key={row._id} className="flex items-center gap-2 rounded-lg border p-2">
+            <Checkbox
+              checked={selected.has(row._id)}
+              onCheckedChange={(checked) => toggleRow(row._id, checked === true)}
+              aria-label={`Chọn dòng ${row.label || "mới"}`}
+              className="shrink-0"
+            />
+            <Input
+              value={row.label}
+              onChange={(e) => updateRow(row._id, { label: e.target.value })}
+              placeholder="vd: gian_du"
+              className="h-7 w-36 shrink-0 font-mono text-xs"
+              aria-invalid={!row.label.trim()}
+            />
+            <Input
+              value={row.tag}
+              onChange={(e) => updateRow(row._id, { tag: e.target.value })}
+              placeholder="(để trống nếu nhãn chưa có từ)"
+              className="h-7 flex-1 font-mono text-xs"
+            />
+          </div>
+        ))}
       </div>
     </div>
   );

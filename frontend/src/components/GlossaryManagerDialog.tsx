@@ -59,7 +59,9 @@ export default function GlossaryManagerDialog({ open, onOpenChange }: Props) {
                   : null
               }
             >
-              {(content, setContent) => <GlossaryEditor value={content} onChange={setContent} />}
+              {(content, setContent, table) => (
+                <GlossaryEditor value={content} onChange={setContent} table={table} />
+              )}
             </SettingsSectionShell>
           </div>
         </TabsPanel>

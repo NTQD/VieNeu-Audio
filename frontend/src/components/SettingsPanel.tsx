@@ -185,7 +185,9 @@ export default function SettingsPanel() {
           }}
           toRaw={(content, raw) => ({ ...metaOf(raw), ...content })}
         >
-          {(content, setContent) => <EmotionLexiconEditor value={content} onChange={setContent} />}
+          {(content, setContent, table) => (
+            <EmotionLexiconEditor value={content} onChange={setContent} table={table} />
+          )}
         </SettingsSectionShell>
       </DataViewerDialog>
 
@@ -208,7 +210,9 @@ export default function SettingsPanel() {
           }}
           toRaw={(content, raw) => ({ ...metaOf(raw), ...content })}
         >
-          {(content, setContent) => <PunctuationPauseEditor value={content} onChange={setContent} />}
+          {(content, setContent, table) => (
+            <PunctuationPauseEditor value={content} onChange={setContent} table={table} />
+          )}
         </SettingsSectionShell>
       </DataViewerDialog>
     </>

@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { Button } from "@/components/ui/button";
 import { fetchSettingsFile, uploadSettingsFile } from "@/lib/api";
 
 export type SettingsKey = "emotion-lexicon" | "glossary-seed" | "punctuation-pauses";
@@ -26,7 +25,21 @@ export function metaOf(raw: Record<string, unknown>) {
 // động "tôi muốn xem/sửa cái này" rồi, thêm 1 nút xác nhận nữa là thừa. Bỏ
 // luôn tiêu đề/mô tả/nút "Đóng" riêng của khối này (DialogTitle + đóng dialog
 // của DataViewerDialog đã lo phần đó) - component này giờ CHỈ còn là vùng
-// nội dung + nút Lưu.
+// nội dung.
+//
+// 2026-09-15 - nut Luu KHONG con tu render o day nua (truoc day la 1 thanh
+// sticky-bottom rieng cua shell nay). Yeu cau nguoi dung: Them/Xoa/Luu phai
+// la TAI NGUYEN DUNG CHUNG cua ca bang, khong phai rieng le - moi editor con
+// (Emotion/Glossary/Punctuation) gio tu render 1 TableToolbar DUY NHAT gom
+// ca 3 nut, dat canh checkbox "chon tat ca"/nut Xoa da chon. Shell nay chi
+// con lo phan tai du lieu + co che luu, expose ra ngoai qua tham so thu 3
+// cua children thay vi tu ve UI.
+export type SaveController = {
+  save: () => void;
+  status: "idle" | "loading" | "saving" | "error";
+  error: string | null;
+};
+
 export function SettingsSectionShell<T>({
   settingsKey,
   toContent,
@@ -38,7 +51,7 @@ export function SettingsSectionShell<T>({
   toContent: (raw: Record<string, unknown>) => T;
   toRaw: (content: T, raw: Record<string, unknown>) => Record<string, unknown>;
   validate?: (content: T) => string | null;
-  children: (content: T, setContent: (next: T) => void) => ReactNode;
+  children: (content: T, setContent: (next: T) => void, table: SaveController) => ReactNode;
 }) {
   const [raw, setRaw] = useState<Record<string, unknown> | null>(null);
   const [content, setContent] = useState<T | null>(null);
@@ -94,18 +107,5 @@ export function SettingsSectionShell<T>({
     );
   }
 
-  return (
-    <div className="space-y-3">
-      {children(content, setContent)}
-      {/* Thanh Luu dinh o day (sticky bottom) - vung noi dung ben tren co the
-          cuon rat dai (vd. tu dien cam xuc nhieu nhan), nut Luu luon trong
-          tam mat khong can cuon xuong cuoi. */}
-      <div className="sticky bottom-0 -mx-4 flex items-center gap-2 border-t bg-popover px-4 py-2 sm:mx-0 sm:px-0">
-        <Button size="sm" onClick={save} disabled={status === "saving"}>
-          {status === "saving" ? "Đang lưu..." : "Lưu"}
-        </Button>
-        {status === "error" && error && <p className="text-xs text-destructive">{error}</p>}
-      </div>
-    </div>
-  );
+  return <>{children(content, setContent, { save, status, error: status === "error" ? error : null })}</>;
 }

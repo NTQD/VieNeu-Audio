@@ -1,41 +1,82 @@
 "use client";
 
-import { useState } from "react";
-import { Button } from "@/components/ui/button";
+import { useRef, useState } from "react";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
-import { Plus, Trash2 } from "lucide-react";
+import TableToolbar from "@/components/TableToolbar";
+import type { SaveController } from "@/components/SettingsSectionShell";
 
 const MAX_MS = 1000;
+
+interface Row {
+  _id: number;
+  key: string;
+  ms: number;
+}
 
 interface Props {
   value: Record<string, number>;
   onChange: (next: Record<string, number>) => void;
+  table: SaveController;
 }
 
-export default function PunctuationPauseEditor({ value, onChange }: Props) {
-  const [newKey, setNewKey] = useState("");
-  const [newMs, setNewMs] = useState("200");
+function rowsFromValue(value: Record<string, number>): Row[] {
+  return Object.entries(value).map(([key, ms], i) => ({ _id: i, key, ms }));
+}
 
-  const keys = Object.keys(value);
+function rowsToValue(rows: Row[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const row of rows) {
+    const key = row.key.trim();
+    if (!key) continue;
+    out[key] = row.ms;
+  }
+  return out;
+}
 
-  function setMs(key: string, ms: number) {
-    onChange({ ...value, [key]: Math.max(0, Math.round(ms)) });
+// 2026-09-15 - Chuyen tu "1 dong = 1 key co san trong `value` + nut Xoa rieng
+// tren tung dong, cong 1 form Them RIENG biet nam duoi bang" sang 1 bang co
+// STATE HANG NOI BO (_id on dinh, khong phai key chuoi - vi key dang duoc
+// go do nguoi dung co the trung/rong tam thoi trong luc them dong moi) +
+// checkbox chon dong + TableToolbar dung chung (xem TableToolbar.tsx). Dong
+// moi them qua nut "Them" gio la 1 dong TRONG ngay trong bang, sua truc tiep
+// tai cho - khong con 2 co che Them khac nhau (1 o day, 1 nam duoi bang).
+export default function PunctuationPauseEditor({ value, onChange, table }: Props) {
+  const [rows, setRows] = useState<Row[]>(() => rowsFromValue(value));
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const nextId = useRef(rows.length);
+
+  function commit(next: Row[]) {
+    setRows(next);
+    onChange(rowsToValue(next));
   }
 
-  function removeKey(key: string) {
-    const next = { ...value };
-    delete next[key];
-    onChange(next);
+  function updateRow(id: number, patch: Partial<Row>) {
+    commit(rows.map((r) => (r._id === id ? { ...r, ...patch } : r)));
   }
 
-  function addKey() {
-    const key = newKey.trim();
-    if (!key || key in value) return;
-    const ms = Number(newMs);
-    onChange({ ...value, [key]: Number.isFinite(ms) ? Math.max(0, Math.round(ms)) : 0 });
-    setNewKey("");
-    setNewMs("200");
+  function addRow() {
+    const row: Row = { _id: nextId.current++, key: "", ms: 200 };
+    commit([...rows, row]);
+  }
+
+  function deleteSelected() {
+    commit(rows.filter((r) => !selected.has(r._id)));
+    setSelected(new Set());
+  }
+
+  function toggleAll(checked: boolean) {
+    setSelected(checked ? new Set(rows.map((r) => r._id)) : new Set());
+  }
+
+  function toggleRow(id: number, checked: boolean) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
   }
 
   return (
@@ -45,63 +86,55 @@ export default function PunctuationPauseEditor({ value, onChange }: Props) {
         1 đoạn. Có hiệu lực ngay khi lưu, không cần khởi động lại backend.
       </p>
 
-      {keys.length === 0 && (
+      <TableToolbar
+        totalCount={rows.length}
+        selectedCount={selected.size}
+        onToggleAll={toggleAll}
+        onAdd={addRow}
+        addLabel="Thêm dòng"
+        onDeleteSelected={deleteSelected}
+        onSave={table.save}
+        saving={table.status === "saving"}
+        error={table.error}
+      />
+
+      {rows.length === 0 && (
         <p className="text-xs italic text-muted-foreground">Chưa có mục nào.</p>
       )}
 
       <div className="space-y-2">
-        {keys.map((key) => (
-          <div key={key} className="flex items-center gap-2 rounded-lg border p-2">
-            <span className="w-28 shrink-0 truncate rounded bg-muted px-1.5 py-0.5 text-center font-mono text-xs">
-              {key}
-            </span>
+        {rows.map((row) => (
+          <div key={row._id} className="flex items-center gap-2 rounded-lg border p-2">
+            <Checkbox
+              checked={selected.has(row._id)}
+              onCheckedChange={(checked) => toggleRow(row._id, checked === true)}
+              aria-label={`Chọn dòng ${row.key || "mới"}`}
+            />
+            <Input
+              value={row.key}
+              onChange={(e) => updateRow(row._id, { key: e.target.value })}
+              placeholder="Dấu câu / token (vd: ~)"
+              className="h-7 w-28 shrink-0 font-mono text-xs"
+              aria-invalid={!row.key.trim()}
+            />
             <Slider
               min={0}
               max={MAX_MS}
               step={10}
-              value={[value[key] ?? 0]}
-              onValueChange={(v) => setMs(key, Array.isArray(v) ? v[0] : v)}
+              value={[row.ms]}
+              onValueChange={(v) => updateRow(row._id, { ms: Math.max(0, Math.round(Array.isArray(v) ? v[0] : v)) })}
               className="flex-1"
             />
             <Input
               type="number"
               min={0}
-              value={value[key] ?? 0}
-              onChange={(e) => setMs(key, Number(e.target.value) || 0)}
+              value={row.ms}
+              onChange={(e) => updateRow(row._id, { ms: Math.max(0, Number(e.target.value) || 0) })}
               className="h-7 w-16 shrink-0 text-xs"
             />
             <span className="w-6 shrink-0 text-xs text-muted-foreground">ms</span>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              onClick={() => removeKey(key)}
-              aria-label={`Xoá mục ${key}`}
-              className="shrink-0"
-            >
-              <Trash2 />
-            </Button>
           </div>
         ))}
-      </div>
-
-      <div className="flex items-center gap-1.5 border-t pt-2">
-        <Input
-          value={newKey}
-          onChange={(e) => setNewKey(e.target.value)}
-          placeholder="Dấu câu / token mới (vd: ~)"
-          className="h-7 text-xs"
-        />
-        <Input
-          type="number"
-          min={0}
-          value={newMs}
-          onChange={(e) => setNewMs(e.target.value)}
-          className="h-7 w-20 shrink-0 text-xs"
-        />
-        <span className="shrink-0 text-xs text-muted-foreground">ms</span>
-        <Button size="sm" variant="outline" onClick={addKey} className="shrink-0">
-          <Plus /> Thêm
-        </Button>
       </div>
     </div>
   );
