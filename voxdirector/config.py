@@ -29,14 +29,23 @@ GEMINI_MODEL = os.environ.get("VOXDIRECTOR_GEMINI_MODEL", "gemini-3.6-flash")
 # call_structured() DAU TIEN thuc su chay (xem llm_client._resolve_model()) -
 # KHONG bao gio doi model GIUA CAC LAN GOI trong CUNG 1 job dang chay, dung
 # nguyen tac "1 model ghim cung/lan chay de tai lap duoc" da ghi o
-# GEMINI_MODEL o tren. Rong theo mac dinh - DANH SACH MODEL GEMINI THAT SU
-# CON DUOC CAP hien tai phai do NGUOI DUNG tu xac nhan qua
-# aistudio.google.com (khong the doan/bia ten model o day - dua vao 1 model
-# khong ton tai se khien chinh co che fallback nay tro thanh nguyen nhan loi
-# moi, thay vi giai phap).
+# GEMINI_MODEL o tren.
+#
+# gemini-3.5-flash roi gemini-2.5-flash - xac nhan CO THAT (2026-09-14, nguoi
+# dung tu cung cap link chinh thuc https://ai.google.dev/gemini-api/docs/models)
+# ca 2 deu la model ON DINH (stable, khong phai preview/experimental), KHONG
+# nam trong danh sach da bi "Shut down" cua Google tai thoi diem nay (khac voi
+# gemini-2.0-flash/gemini-2.0-flash-lite - da ngung hoat dong, KHONG dung lam
+# fallback). Chon LUI ve version cu hon (3.6 -> 3.5 -> 2.5) thay vi tien len
+# ban moi hon (3.7/3.8) vi hanh vi model cu gan voi model chinh dang dung hon,
+# giam rui ro lech ket qua khi that su phai fallback - van chi la LUA CHON
+# HOP LY dua tren thong tin CO SAN, khong phai da qua kiem chung bang nghe
+# that (khac voi cac quyet dinh da "chot" khac trong file nay).
 GEMINI_MODEL_FALLBACKS = [
     m.strip()
-    for m in os.environ.get("VOXDIRECTOR_GEMINI_MODEL_FALLBACKS", "").split(",")
+    for m in os.environ.get(
+        "VOXDIRECTOR_GEMINI_MODEL_FALLBACKS", "gemini-3.5-flash,gemini-2.5-flash"
+    ).split(",")
     if m.strip()
 ]
 
