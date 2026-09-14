@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
@@ -12,7 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Plus, Trash2 } from "lucide-react";
+import TableToolbar from "@/components/TableToolbar";
 import {
   deleteLiveGlossaryEntry,
   fetchLiveGlossaryEntries,
@@ -37,30 +37,39 @@ function blankEntry(): GlossaryEntry {
   };
 }
 
+interface Row {
+  _id: number;
+  entry: GlossaryEntry;
+  // true = dong nay CHUA TUNG duoc luu vao ChromaDB (them qua nut "Them" -
+  // Ten goc con sua duoc, la doc-id chua chot). false = da co trong ChromaDB,
+  // Ten goc khoa lai (doc id, doi ten = xoa+tao moi, ngoai pham vi bang nay).
+  isNew: boolean;
+}
+
 // 2026-09-14 - "Glossary dang dung": doc/ghi TRUC TIEP tren ChromaDB qua
 // GET/POST/DELETE /api/glossary - KHAC voi "Glossary khoi tao" o tren
-// (GlossaryEditor.tsx, sua file JSON tinh data/glossary_seed.json). Sinh ra
-// de fix bao cao "duyệt xong nhưng dữ liệu không được lưu": approve_new_entries()
-// (goi tu NewTermConfirmationPanel) van LUON ghi dung vao ChromaDB - chi la
-// truoc day KHONG CO CHO NAO tren UI hien lai duoc dung du lieu do, nguoi
-// dung tuong nham dang xem "glossary that" khi mo Glossary khoi tao (thuc ra
-// la file seed tinh, khong lien quan). Moi entry o day duoc luu/xoa NGAY LAP
-// TUC (khong co nut "Luu" chung cho ca danh sach) vi ChromaDB la 1 tap hop
-// document doc lap, khac voi 3 file JSON kia (ghi de nguyen file 1 lan).
+// (GlossaryEditor.tsx, sua file JSON tinh data/glossary_seed.json).
+//
+// 2026-09-15 - Truoc day moi The (Card) tu quan ly nut Luu/Xoa RIENG cua no
+// (goi upsert/delete tung entry 1), cong 1 The "Them thuat ngu moi" RIENG BIET
+// o duoi voi bo input/nut Them cua chinh no - 3 co che khac nhau cho 3 muc
+// dich. Yeu cau nguoi dung: dong bo giao dien voi Glossary khoi tao/Tu dien
+// cam xuc/Bang ngat nghi (TableToolbar dung chung). ChromaDB khong co endpoint
+// luu/xoa HANG LOAT, nen "Luu"/"Xoa da chon" o day goi NHIEU request don le
+// (upsert/delete tung entry, Promise.allSettled) thay vi 1 request thay-the-
+// toan-bo nhu 3 bang JSON kia - ve UI/hanh vi nguoi dung thi giong het (1
+// checkbox chon dong, 1 nut Them, 1 nut Xoa da chon, 1 nut Luu DUY NHAT), chi
+// khac o tang goi API ben duoi.
 export default function LiveGlossaryManager() {
-  const [entries, setEntries] = useState<GlossaryEntry[] | null>(null);
+  const [rows, setRows] = useState<Row[] | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
-  const [rowState, setRowState] = useState<Record<string, "idle" | "saving" | "deleting" | "error">>({});
-  const [rowError, setRowError] = useState<Record<string, string>>({});
-  const [newEntry, setNewEntry] = useState<GlossaryEntry>(blankEntry());
-  const [addStatus, setAddStatus] = useState<"idle" | "saving" | "error">("idle");
-  const [addError, setAddError] = useState<string | null>(null);
-  // Ref (khong phai state) - chi doc trong callback debounce, khong can
-  // trigger re-render khi doi; danh dau nguoi dung DA tu chon loai thu cong
-  // cho lan go term nay, de goi y tu dong (bat dong bo, den SAU) khong ghi
-  // de lua chon do.
-  const labelManuallySet = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const nextId = useRef(0);
+  // Nhan da CHON THU CONG cho dong nao (Select's onValueChange) - goi y tu
+  // dong (bat dong bo, den SAU) se bo qua dong do de khong ghi de lua chon.
+  const labelManuallySet = useRef<Set<number>>(new Set());
   const suggestDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -70,7 +79,8 @@ export default function LiveGlossaryManager() {
     fetchLiveGlossaryEntries()
       .then((data) => {
         if (cancelled) return;
-        setEntries(data);
+        const initial = data.map((entry) => ({ _id: nextId.current++, entry, isNew: false }));
+        setRows(initial);
         setStatus("idle");
       })
       .catch((err) => {
@@ -83,265 +93,220 @@ export default function LiveGlossaryManager() {
     };
   }, []);
 
-  function updateEntry(term: string, patch: Partial<GlossaryEntry>) {
-    setEntries((prev) =>
-      prev ? prev.map((e) => (e.original_term === term ? { ...e, ...patch } : e)) : prev
-    );
-  }
-
-  async function saveEntry(entry: GlossaryEntry) {
-    setRowState((s) => ({ ...s, [entry.original_term]: "saving" }));
-    setRowError((s) => ({ ...s, [entry.original_term]: "" }));
-    try {
-      await upsertLiveGlossaryEntry(entry);
-      setRowState((s) => ({ ...s, [entry.original_term]: "idle" }));
-    } catch (err) {
-      setRowState((s) => ({ ...s, [entry.original_term]: "error" }));
-      setRowError((s) => ({
-        ...s,
-        [entry.original_term]: err instanceof Error ? err.message : "Lưu thất bại",
-      }));
-    }
-  }
-
-  async function removeEntry(term: string) {
-    setRowState((s) => ({ ...s, [term]: "deleting" }));
-    try {
-      await deleteLiveGlossaryEntry(term);
-      setEntries((prev) => (prev ? prev.filter((e) => e.original_term !== term) : prev));
-    } catch (err) {
-      setRowState((s) => ({ ...s, [term]: "error" }));
-      setRowError((s) => ({
-        ...s,
-        [term]: err instanceof Error ? err.message : "Xoá thất bại",
-      }));
-    }
-  }
-
-  // Goi y nhan (entity_type) theo tu khoa khi nguoi dung go term moi - go
-  // term MOI (khac voi truoc) coi nhu 1 candidate moi, xoa co "da tu chon
-  // thu cong" cua candidate cu. Neu nguoi dung tu chon loai (Select's
-  // onValueChange) TRUOC KHI goi y bat dong bo nay tra ve, labelManuallySet
-  // se la true va goi y bi bo qua - tranh ghi de lua chon thu cong.
-  function handleNewTermChange(term: string) {
-    setNewEntry((e) => ({ ...e, original_term: term }));
-    labelManuallySet.current = false;
-    if (suggestDebounce.current) clearTimeout(suggestDebounce.current);
-    if (!term.trim()) return;
-    suggestDebounce.current = setTimeout(async () => {
-      try {
-        const suggested = await suggestGlossaryLabel(term);
-        if (labelManuallySet.current) return;
-        setNewEntry((e) => (e.original_term === term ? { ...e, entity_type: suggested } : e));
-      } catch {
-        // Goi y chi la tien ich phu - loi o day khong can bao, nguoi dung
-        // van tu chon loai duoc binh thuong qua dropdown.
-      }
-    }, 400);
-  }
-
-  async function addEntry() {
-    if (!newEntry.original_term.trim() || !newEntry.canonical_form.trim()) {
-      setAddError("Cần điền Tên gốc và Tên chuẩn hoá.");
-      setAddStatus("error");
-      return;
-    }
-    setAddStatus("saving");
-    setAddError(null);
-    try {
-      await upsertLiveGlossaryEntry(newEntry);
-      setEntries((prev) => [...(prev ?? []), newEntry]);
-      setNewEntry(blankEntry());
-      labelManuallySet.current = false;
-      setAddStatus("idle");
-    } catch (err) {
-      setAddStatus("error");
-      setAddError(err instanceof Error ? err.message : "Thêm thất bại");
-    }
-  }
-
   useEffect(() => {
     return () => {
       if (suggestDebounce.current) clearTimeout(suggestDebounce.current);
     };
   }, []);
 
+  function updateRow(id: number, patch: Partial<GlossaryEntry>) {
+    setRows((prev) =>
+      prev ? prev.map((r) => (r._id === id ? { ...r, entry: { ...r.entry, ...patch } } : r)) : prev
+    );
+  }
+
+  function handleTermChange(id: number, term: string) {
+    updateRow(id, { original_term: term });
+    labelManuallySet.current.delete(id);
+    if (suggestDebounce.current) clearTimeout(suggestDebounce.current);
+    if (!term.trim()) return;
+    suggestDebounce.current = setTimeout(async () => {
+      try {
+        const suggested = await suggestGlossaryLabel(term);
+        if (labelManuallySet.current.has(id)) return;
+        setRows((prev) =>
+          prev
+            ? prev.map((r) =>
+                r._id === id && r.entry.original_term === term
+                  ? { ...r, entry: { ...r.entry, entity_type: suggested } }
+                  : r
+              )
+            : prev
+        );
+      } catch {
+        // Goi y chi la tien ich phu - loi o day khong can bao.
+      }
+    }, 400);
+  }
+
+  function addRow() {
+    setRows((prev) => [...(prev ?? []), { _id: nextId.current++, entry: blankEntry(), isNew: true }]);
+  }
+
+  function toggleAll(checked: boolean) {
+    setSelected(checked && rows ? new Set(rows.map((r) => r._id)) : new Set());
+  }
+
+  function toggleRow(id: number, checked: boolean) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  async function deleteSelected() {
+    if (!rows) return;
+    const toDelete = rows.filter((r) => selected.has(r._id));
+    const persisted = toDelete.filter((r) => !r.isNew);
+    setError(null);
+    const results = await Promise.allSettled(
+      persisted.map((r) => deleteLiveGlossaryEntry(r.entry.original_term))
+    );
+    const failedIds = new Set<number>();
+    results.forEach((res, i) => {
+      if (res.status === "rejected") failedIds.add(persisted[i]._id);
+    });
+    if (failedIds.size > 0) {
+      setError(`Xoá thất bại ${failedIds.size} entry — thử lại.`);
+    }
+    setRows((prev) => (prev ? prev.filter((r) => !selected.has(r._id) || failedIds.has(r._id)) : prev));
+    setSelected(failedIds);
+  }
+
+  async function saveAll() {
+    if (!rows) return;
+    const missing = rows.some((r) => !r.entry.original_term.trim() || !r.entry.canonical_form.trim());
+    if (missing) {
+      setError("Có entry còn thiếu Tên gốc hoặc Tên chuẩn hoá.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    const results = await Promise.allSettled(rows.map((r) => upsertLiveGlossaryEntry(r.entry)));
+    const failedIds = new Set<number>();
+    results.forEach((res, i) => {
+      if (res.status === "rejected") failedIds.add(rows[i]._id);
+    });
+    setRows((prev) =>
+      prev ? prev.map((r) => (failedIds.has(r._id) ? r : { ...r, isNew: false })) : prev
+    );
+    setSaving(false);
+    if (failedIds.size > 0) setError(`Lưu thất bại ${failedIds.size} entry — thử lại.`);
+  }
+
+  if (rows === null) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        {status === "error" ? (error ?? "Tải thất bại") : "Đang tải..."}
+      </p>
+    );
+  }
+
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       <p className="text-xs text-muted-foreground">
         Đọc/ghi trực tiếp trên ChromaDB — nơi các thuật ngữ đã &ldquo;Duyệt&rdquo; (từ popup
         &ldquo;Thuật ngữ mới phát hiện&rdquo;) thực sự được lưu. Khác với tab &ldquo;Khởi
         tạo&rdquo;, chỉ là file seed tĩnh nạp 1 lần lúc pipeline khởi động.
       </p>
 
-      {entries === null && (
-        <p className="text-sm text-muted-foreground">
-          {status === "error" ? (error ?? "Tải thất bại") : "Đang tải..."}
+      <TableToolbar
+        totalCount={rows.length}
+        selectedCount={selected.size}
+        onToggleAll={toggleAll}
+        onAdd={addRow}
+        addLabel="Thêm entry"
+        onDeleteSelected={deleteSelected}
+        onSave={saveAll}
+        saving={saving}
+        error={error}
+      />
+
+      {rows.length === 0 && (
+        <p className="text-xs italic text-muted-foreground">
+          Glossary đang dùng chưa có entry nào (chưa có thuật ngữ nào được duyệt).
         </p>
       )}
 
-      {entries !== null && (
-        <div className="space-y-3">
-          {entries.length === 0 && (
-            <p className="text-xs italic text-muted-foreground">
-              Glossary đang dùng chưa có entry nào (chưa có thuật ngữ nào được duyệt).
-            </p>
-          )}
-
-          <div className="space-y-2">
-            {entries.map((entry) => {
-              const state = rowState[entry.original_term] ?? "idle";
-              const missingRequired =
-                !entry.original_term.trim() || !entry.canonical_form.trim();
-              return (
-                <Card key={entry.original_term} size="sm">
-                  <CardContent className="space-y-2">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="grid flex-1 grid-cols-2 gap-2">
-                        <div className="space-y-1">
-                          <Label className="text-xs text-muted-foreground">Tên gốc</Label>
-                          <Input value={entry.original_term} disabled className="h-7 text-xs" />
-                        </div>
-                        <div className="space-y-1">
-                          <Label className="text-xs text-muted-foreground">Tên chuẩn hoá</Label>
-                          <Input
-                            value={entry.canonical_form}
-                            onChange={(e) =>
-                              updateEntry(entry.original_term, { canonical_form: e.target.value })
-                            }
-                            className="h-7 text-xs"
-                          />
-                        </div>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        onClick={() => removeEntry(entry.original_term)}
-                        disabled={state === "deleting"}
-                        aria-label={`Xoá entry ${entry.original_term}`}
-                        className="mt-4.5 shrink-0"
-                      >
-                        <Trash2 />
-                      </Button>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="space-y-1">
-                        <Label className="text-xs text-muted-foreground">Loại</Label>
-                        <Select
-                          value={entry.entity_type}
-                          onValueChange={(v) =>
-                            updateEntry(entry.original_term, {
-                              entity_type: v as GlossaryEntry["entity_type"],
-                            })
-                          }
-                        >
-                          <SelectTrigger size="sm" className="h-7 w-full text-xs">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {ENTITY_TYPES.map((t) => (
-                              <SelectItem key={t.value} value={t.value}>
-                                {t.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs text-muted-foreground">Xuất hiện từ chương</Label>
-                        <Input
-                          type="number"
-                          min={1}
-                          value={entry.first_seen_chapter ?? ""}
-                          onChange={(e) =>
-                            updateEntry(entry.original_term, {
-                              first_seen_chapter:
-                                e.target.value === "" ? null : Number(e.target.value),
-                            })
-                          }
-                          placeholder="(tuỳ chọn)"
-                          className="h-7 text-xs"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <Button
-                        size="sm"
-                        onClick={() => saveEntry(entry)}
-                        disabled={state === "saving" || missingRequired}
-                      >
-                        {state === "saving" ? "Đang lưu..." : "Lưu"}
-                      </Button>
-                      {state === "error" && (
-                        <p className="text-[0.7rem] text-destructive">
-                          {rowError[entry.original_term]}
-                        </p>
-                      )}
-                    </div>
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
-
-          <Card size="sm" className="border-dashed">
-            <CardContent className="space-y-2">
-              <p className="text-xs font-medium">Thêm thuật ngữ mới</p>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Tên gốc</Label>
-                  <Input
-                    value={newEntry.original_term}
-                    onChange={(e) => handleNewTermChange(e.target.value)}
-                    placeholder="vd: Huyết Nguyệt Tông"
-                    className="h-7 text-xs"
+      <div className="space-y-2">
+        {rows.map((row) => {
+          const { entry } = row;
+          const missingRequired = !entry.original_term.trim() || !entry.canonical_form.trim();
+          return (
+            <Card key={row._id} size="sm">
+              <CardContent className="space-y-2">
+                <div className="flex items-start gap-2">
+                  <Checkbox
+                    checked={selected.has(row._id)}
+                    onCheckedChange={(checked) => toggleRow(row._id, checked === true)}
+                    aria-label={`Chọn entry ${entry.original_term || "mới"}`}
+                    className="mt-1.5 shrink-0"
                   />
+                  <div className="grid flex-1 grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Tên gốc</Label>
+                      <Input
+                        value={entry.original_term}
+                        disabled={!row.isNew}
+                        onChange={(e) => handleTermChange(row._id, e.target.value)}
+                        placeholder="vd: Huyết Nguyệt Tông"
+                        className="h-7 text-xs"
+                        aria-invalid={!entry.original_term.trim()}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Tên chuẩn hoá</Label>
+                      <Input
+                        value={entry.canonical_form}
+                        onChange={(e) => updateRow(row._id, { canonical_form: e.target.value })}
+                        className="h-7 text-xs"
+                        aria-invalid={!entry.canonical_form.trim()}
+                      />
+                    </div>
+                  </div>
                 </div>
-                <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Tên chuẩn hoá</Label>
-                  <Input
-                    value={newEntry.canonical_form}
-                    onChange={(e) => setNewEntry((v) => ({ ...v, canonical_form: e.target.value }))}
-                    placeholder="vd: Huyết Nguyệt Tông"
-                    className="h-7 text-xs"
-                  />
+
+                <div className="grid grid-cols-2 gap-2 pl-6">
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Loại</Label>
+                    <Select
+                      value={entry.entity_type}
+                      onValueChange={(v) => {
+                        labelManuallySet.current.add(row._id);
+                        updateRow(row._id, { entity_type: v as GlossaryEntry["entity_type"] });
+                      }}
+                    >
+                      <SelectTrigger size="sm" className="h-7 w-full text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {ENTITY_TYPES.map((t) => (
+                          <SelectItem key={t.value} value={t.value}>
+                            {t.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Xuất hiện từ chương</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={entry.first_seen_chapter ?? ""}
+                      onChange={(e) =>
+                        updateRow(row._id, {
+                          first_seen_chapter: e.target.value === "" ? null : Number(e.target.value),
+                        })
+                      }
+                      placeholder="(tuỳ chọn)"
+                      className="h-7 text-xs"
+                    />
+                  </div>
                 </div>
-              </div>
-              <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">
-                  Loại (tự động gợi ý theo tên gốc, có thể sửa)
-                </Label>
-                <Select
-                  value={newEntry.entity_type}
-                  onValueChange={(v) => {
-                    labelManuallySet.current = true;
-                    setNewEntry((e) => ({ ...e, entity_type: v as GlossaryEntry["entity_type"] }));
-                  }}
-                >
-                  <SelectTrigger size="sm" className="h-7 w-full text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ENTITY_TYPES.map((t) => (
-                      <SelectItem key={t.value} value={t.value}>
-                        {t.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              {addStatus === "error" && addError && (
-                <p className="text-[0.7rem] text-destructive">{addError}</p>
-              )}
-              <Button size="sm" variant="outline" onClick={addEntry} disabled={addStatus === "saving"} className="w-full">
-                <Plus /> {addStatus === "saving" ? "Đang thêm..." : "Thêm entry"}
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
-      )}
+
+                {missingRequired && (
+                  <p className="pl-6 text-[0.7rem] text-destructive">
+                    Cần điền Tên gốc và Tên chuẩn hoá trước khi lưu.
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
     </div>
   );
 }
