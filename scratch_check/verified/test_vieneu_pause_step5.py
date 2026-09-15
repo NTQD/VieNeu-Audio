@@ -11,7 +11,16 @@ cac doan im lang that trong audio, thay vi doc alignment truc tiep tu model.
 Day la bang chung KHACH QUAN BO SUNG, KHONG thay the viec nguoi dung tu
 nghe that - ket qua cuoi cung van can 1 nguoi nghe thuc te de danh gia.
 
-Chay: backend/.venv/Scripts/python.exe scratch_check/unverified/test_vieneu_pause_step5.py
+Chay: backend/.venv/Scripts/python.exe scratch_check/verified/test_vieneu_pause_step5.py
+
+DA CHAY (2026-09-15, qua container backend that): ban CO dau cau dai hon
+ban KHONG dau cau 20.2% (9.52s vs 7.92s), nhung so khoang-lang-tu-dong-
+phat-hien lai XAP XI NHAU (11 vs 12) - tieu chi tu dong cua script nay
+("nhieu hon RO RET + dai hon 150ms") KHONG thoa, nen ket luan in ra van la
+"khong ro rang". Day la bang chung tot nhat KHONG THAY THE duoc viec nghe
+that - 2 file .wav da gui cho nguoi dung tu nghe truc tiep
+(step5_with_punctuation.wav / step5_without_punctuation.wav) de quyet dinh
+cuoi cung ve Section 7.3.
 """
 import os
 import sys
