@@ -72,39 +72,57 @@ real speech-to-text pass).
     does not recompute the merged subtitle timestamps, so if the re-rendered
     chunk's length changes noticeably, later subtitle lines can drift
     slightly out of sync.
-- Export buttons: **"Xuất Audio"** (works — downloads the final `.wav`),
-  **"Xuất Video"** (intentionally disabled — video rendering isn't wired
-  into the backend yet), **"Xuất Phụ đề (.srt)"** (works).
+- Export buttons: **"Xuất Audio"** (downloads the final `.wav`), **"Xuất
+  Video"** (only enabled if you set a background image under "Tuỳ chọn nâng
+  cao" before processing — video rendering needs that image as input, and
+  the button greys out with a tooltip explaining why if you skip it),
+  **"Xuất Phụ đề (.srt)"**.
 
 ## 6. New-term confirmation panel
 
 If Beta encounters a proper noun / place / term not yet in the glossary, a
 small dismissible panel appears in the bottom-right corner — on top of
 whichever screen you're on, desktop or mobile — listing each candidate with
-a **"Duyệt"** (approve) button. Approving is currently a client-side
-acknowledgement only; nothing is written back to the glossary automatically
-yet (see Known Gaps below).
+a **"Duyệt"** (approve) button. Approving writes the term straight into the
+live Character/Terminology Glossary (ChromaDB) — it's picked up by Beta for
+every chapter processed after that, in this job and future ones. You can
+review, edit, or manually add/delete glossary entries any time from
+**"Cài đặt dữ liệu" → Glossary → "Đang dùng (thời gian thực)"** (see
+Settings below).
 
 ## 7. Settings ("Cài đặt dữ liệu", top-right)
 
-Opens a dialog with three editable JSON files, each with a "Tải để sửa"
-(load to edit) button, a raw JSON textarea, and "Lưu (ghi đè toàn bộ file)"
-(save — replaces the whole file, not a merge):
+Opens a small dialog listing the 3 data sections plus BYOK; each section's
+**"Xem/Sửa"** (or **"Quản lý Glossary"**) button opens its own large,
+dedicated dialog with a proper table editor — not a raw JSON textarea:
 
-- **Từ điển cảm xúc** — `emotion_label → [candidate words]`. Determines
-  what Alpha can flag and what Beta is allowed to insert.
-- **Glossary khởi tạo** — seed entries for the Character/Terminology
-  Glossary (character names, places, terms and their canonical spelling).
+- **Từ điển cảm xúc** — flat table of (nhãn, từ/thẻ) rows. `emotion_label`
+  determines what Alpha can flag; the word/tag is what Beta is allowed to
+  insert. Currently ships with exactly 3 labels because that's the
+  empirically-verified ceiling of what VieNeu-TTS actually honors as inline
+  bracket tags (`[cười]`, `[thở dài]`, `[hắng giọng]`) — see the file's own
+  `_note` for how that was tested.
+- **Glossary** — its own tabbed dialog: **"Đang dùng (thời gian thực)"**
+  (the live ChromaDB collection — same store the new-term panel's "Duyệt"
+  writes to; full add/edit/delete here) and **"Khởi tạo"** (the static seed
+  file loaded once at pipeline startup, independent of the live collection).
 - **Bảng ngắt nghỉ theo dấu câu** — punctuation → short-pause-duration (ms)
-  table used for the fine-grained in-chunk pausing.
+  table for fine-grained in-chunk pausing.
 
-A disabled **BYOK API key** field is present but intentionally inert — the
-spec leaves the safe-storage question for a personal Gemini key unresolved,
-so nothing is saved or sent from that field yet.
+All three editors share one toolbar per table (select-all checkbox, Add,
+Delete-selected, Save) instead of a button per row — built for tables with
+many entries, not just a handful.
+
+A working **BYOK API key** field lets each person use their own Gemini key
+instead of the server's shared one — stored in that browser's `localStorage`
+only, sent once per `/api/submit` call, never persisted server-side beyond
+the request being processed.
 
 ## Known gaps (by design, not bugs)
 
-- Video export is not wired — audio + subtitles are the verified path.
-- "Duyệt" on a new-term candidate doesn't persist to the glossary yet.
-- Re-render doesn't recompute merged subtitle timing.
-- BYOK storage is a placeholder field only.
+- Re-render (per-segment) doesn't recompute merged subtitle timing if the
+  re-rendered chunk's length changes noticeably.
+- §7.3 (punctuation-based short pauses inside a chunk) is active in the
+  pipeline but its own necessity for VieNeu-TTS (vs. Piper, which is what
+  originally justified building it) was only empirically re-confirmed by ear
+  on 2026-09-15 — see `scratch_check/verified/test_vieneu_pause_step5.py`.

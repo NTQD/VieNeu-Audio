@@ -1,5 +1,11 @@
 # 🦜 VieNeu-TTS
 
+> Đây là tài liệu của chính SDK Python `vieneu` (cài đặt, dùng SDK, các
+> backbone model). File này chuyển từ gốc repo về đây ngày 2026-09-15 để
+> `README.md` ở gốc repo có thể giới thiệu **VoxDirector AI** — pipeline
+> tạo audiobook nhiều Agent mà repo này cũng đang lưu trữ, xây trên nền
+> SDK này. Nội dung bên dưới không đổi gì khác.
+
 [![Awesome](https://img.shields.io/badge/Awesome-NLP-green?logo=github)](https://github.com/keon/awesome-nlp)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white)](https://discord.gg/yJt8kzjzWZ)
 
@@ -237,7 +243,7 @@ if os.path.exists("examples/audio_ref/example_ngoc_huyen.wav"):
     tts.save(cloned_audio, "outputs/remote_cloned_output.wav")
     print("💾 Đã lưu kết quả remote_cloned_output.wav")
 ```
-*Chi tiết xem tại: [examples/main_remote.py](examples/main_remote.py)*
+*Chi tiết xem tại: [examples/main_remote.py](../examples/main_remote.py)*
 
 ### Quy chuẩn Voice Preset (v1.0)
 VieNeu-TTS sử dụng quy chuẩn chính thức `vieneu.voice.presets` để định nghĩa các tài nguyên giọng nói có thể tái sử dụng. Chỉ các tệp `voices.json` tuân theo quy chuẩn này mới đảm bảo tương thích với VieNeu-TTS SDK ≥ v1.x.

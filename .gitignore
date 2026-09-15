@@ -40,3 +40,4 @@ backend/app/_jobs/
 voxdirector/.chroma/
 voxdirector/.data/
 scratch_check/out/
+.playwright-mcp/
