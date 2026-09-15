@@ -122,7 +122,3 @@ the request being processed.
 
 - Re-render (per-segment) doesn't recompute merged subtitle timing if the
   re-rendered chunk's length changes noticeably.
-- §7.3 (punctuation-based short pauses inside a chunk) is active in the
-  pipeline but its own necessity for VieNeu-TTS (vs. Piper, which is what
-  originally justified building it) was only empirically re-confirmed by ear
-  on 2026-09-15 — see `scratch_check/verified/test_vieneu_pause_step5.py`.

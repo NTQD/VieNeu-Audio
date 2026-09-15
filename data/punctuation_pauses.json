@@ -1,6 +1,6 @@
 {
-  "_placeholder": true,
-  "_note": "PLACEHOLDER — durations copied verbatim from spec Section 7.3, NOT yet tuned by real listening. Team should overwrite via POST /api/settings/punctuation-pauses once available; do not treat these numbers as final.",
+  "_placeholder": false,
+  "_note": "Durations copied verbatim from spec Section 7.3. Confirmed 2026-09-15 by direct listening comparison (scratch_check/verified/test_vieneu_pause_step5.py + pipeline/punctuation_pauses.py's own note): a sentence synthesized through this exact mechanism (punctuation stripped, these ms values reinserted as silence) sounds equivalent in quality to VieNeu-TTS's own native pacing on the same sentence — user decision was to keep the mechanism as-is. That's a real listening check of the mechanism as a whole, not a rigorous per-punctuation-mark A/B (e.g. nobody has specifically verified 150ms is the right value for a comma vs. some other number) — still editable via POST /api/settings/punctuation-pauses if a specific value ever sounds off.",
   ",": 150,
   ".": 400,
   "!": 400,

@@ -7,9 +7,18 @@ mô tả hành vi CỤ THỂ của Piper (đã xác nhận qua đọc mã nguồ
 đó) — đây là LỊCH SỬ giải thích vì sao module này tồn tại, KHÔNG còn là mô tả
 đúng cho engine hiện tại. Cơ chế tách-mảnh-rồi-tự-ghép-khoảng-lặng
 (concat_with_variable_silence) vẫn engine-agnostic và nhiều khả năng tái sử
-dụng được, nhưng cần XÁC NHẬN LẠI bằng thực nghiệm với VieNeu-TTS (VieNeu có
-thể tự xử lý ngắt nghỉ dấu câu khác với Piper — không giả định giống nhau)
-trước khi coi module này là bắt buộc cho engine mới.
+dụng được.
+
+XÁC NHẬN LẠI VỚI VIENEU-TTS — HOÀN TẤT (2026-09-15): đã so sánh trực tiếp 2
+bản audio cùng 1 câu — (a) VieNeu-TTS tự phát âm dấu câu gốc (native pacing,
+không qua module này) và (b) đúng cơ chế production của module này (xoá dấu
+câu, chèn lại khoảng lặng cố định theo data/punctuation_pauses.json) — xem
+scratch_check/verified/test_vieneu_pause_step5.py. Người dùng nghe trực
+tiếp cả 2 file, đánh giá CHẤT LƯỢNG TƯƠNG ĐƯƠNG NHAU, và quyết định GIỮ
+NGUYÊN module này trong production thay vì gỡ bỏ. Không tự động nghĩa là
+mọi giá trị ms trong bảng đã được tinh chỉnh tối ưu theo TỪNG loại dấu câu
+riêng lẻ — chỉ là bằng chứng thật xác nhận cơ chế nói chung không làm giảm
+chất lượng so với việc để VieNeu tự xử lý.
 
 CHỈ xây dựng vì Step 0 đã xác nhận THẬT (không suy đoán) là Piper không tự
 tạo ngắt nghỉ đủ tự nhiên: dấu phẩy/chấm/hỏi/than chỉ tạo khoảng lặng

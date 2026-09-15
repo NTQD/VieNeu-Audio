@@ -17,10 +17,17 @@ DA CHAY (2026-09-15, qua container backend that): ban CO dau cau dai hon
 ban KHONG dau cau 20.2% (9.52s vs 7.92s), nhung so khoang-lang-tu-dong-
 phat-hien lai XAP XI NHAU (11 vs 12) - tieu chi tu dong cua script nay
 ("nhieu hon RO RET + dai hon 150ms") KHONG thoa, nen ket luan in ra van la
-"khong ro rang". Day la bang chung tot nhat KHONG THAY THE duoc viec nghe
-that - 2 file .wav da gui cho nguoi dung tu nghe truc tiep
-(step5_with_punctuation.wav / step5_without_punctuation.wav) de quyet dinh
-cuoi cung ve Section 7.3.
+"khong ro rang". Day la bang chung KHACH QUAN, KHONG THAY THE duoc viec
+nghe that.
+
+QUYET DINH CUOI CUNG (2026-09-15, nguoi dung tu nghe that): so sanh truc
+tiep step5_with_punctuation.wav (VieNeu tu phat am dau cau - "native
+pacing", KHONG qua pipeline/punctuation_pauses.py) voi mot ban thu 3 tong
+hop rieng dung DUNG co che production (tach-manh-roi-chen-lai-khoang-lang
+co dinh theo data/punctuation_pauses.json - script tam thoi, khong luu lai
+trong repo). Nguoi dung danh gia CHAT LUONG TUONG DUONG NHAU giua 2 ban va
+QUYET DINH GIU NGUYEN co che nay trong production (khong go bo Section
+7.3) - xem ghi chu cap nhat trong pipeline/punctuation_pauses.py.
 """
 import os
 import sys
