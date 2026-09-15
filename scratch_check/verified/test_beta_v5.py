@@ -1,7 +1,7 @@
 """Build order Step 5 - test Beta v5 (merged) tren 1 chuong that voi flag
 tu Alpha. Goi Gemini THAT.
 
-Chay: python scratch_check/test_beta_v5.py
+Chay: python scratch_check/verified/test_beta_v5.py
 """
 import os
 import sys
@@ -10,7 +10,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 CHAPTER = """Lý Phong dừng bước trước cổng Hắc Vân Môn, tay nắm chặt thanh kiếm bên hông.
 Gã đã lang bạt giang hồ nhiều năm, chưa từng thấy môn phái nào u ám như thế này.

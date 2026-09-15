@@ -22,7 +22,7 @@ services:
     profiles: ["serve"]
     build:
       context: ..
-      dockerfile: docker/Dockerfile.serve
+      dockerfile: sdk-deploy/Dockerfile.serve
     container_name: vieneu-tts-serve
     ports:
       - "${SERVE_PORT:-23333}:23333"
@@ -57,7 +57,7 @@ services:
     profiles: ["gpu"]
     build:
       context: ..
-      dockerfile: docker/Dockerfile.gpu
+      dockerfile: sdk-deploy/Dockerfile.gpu
       target: dev
     container_name: vieneu-tts-gpu-dev
     environment:

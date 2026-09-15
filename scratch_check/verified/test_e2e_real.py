@@ -6,7 +6,7 @@ dac khach quan (khoang lang, WER) va gui file cho nguoi dung tu nghe that.
 
 Yeu cau backend that dang chay tai localhost:8000 (khong phai stub).
 
-Chay: python scratch_check/test_e2e_real.py
+Chay: python scratch_check/verified/test_e2e_real.py
 """
 import asyncio
 import json
@@ -84,7 +84,9 @@ async def main():
 
     # Tai audio that ve local de gui cho nguoi dung nghe.
     audio_resp = httpx.get(f"{BASE_URL}{result['audio_url']}", timeout=30)
-    out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out", "e2e_real_final.wav")
+    out_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "out", "e2e_real_final.wav"
+    )
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "wb") as f:
         f.write(audio_resp.content)
@@ -98,7 +100,7 @@ async def main():
 
     # Kiem tra khach quan: doc manifest cua chuong de xem boundary_flags that.
     job_dir = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
         "backend", "app", "_jobs", job_id, "chapter_1",
     )
     manifest_path = os.path.join(job_dir, "chapter_1_manifest.json")

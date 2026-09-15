@@ -1,11 +1,11 @@
 """Step 6 - test text_splitter voi sentinel [[PAUSE_LONG]] giua chunk.
 
-Chay: python scratch_check/test_splitter_sentinel.py
+Chay: python scratch_check/verified/test_splitter_sentinel.py
 """
 import os, sys
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from pipeline.text_splitter import split_text_with_boundaries, split_text_for_tts
 

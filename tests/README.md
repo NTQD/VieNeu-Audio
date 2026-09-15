@@ -1,27 +1,23 @@
-# VieNeu-TTS Testing Directory
+# VoxDirector AI — Testing Directory
 
-This directory contains test suites and utilities for verifying the VieNeu-TTS package.
+This directory holds **VoxDirector AI's own** test suites — the multi-agent
+audiobook/video pipeline built on top of the `vieneu` SDK. The SDK's own
+test suite (testing the `vieneu` package itself) lives separately at
+[`engine/sdk/`](../engine/sdk/) — see that folder's own README.
 
-## How to run tests
-
-Ensure you are in the project root:
+## How to run
 
 ```bash
-uv run pytest
+uv run pytest tests/
 ```
 
-This will automatically discover and run all test suites in the `tests/` directory.
+(Running plain `uv run pytest` from the repo root discovers both this
+folder and `engine/sdk/` — there is no `testpaths` restriction in
+`pyproject.toml`. Use `pytest tests/` specifically when you only want
+VoxDirector's own suite.)
 
----
+## Test files
 
-### Individual Test Suites
-- **[test_engine_standard.py](test_engine_standard.py)**: Tests for the standard VieNeuTTS engine (Torch/GGUF).
-- **[test_engine_remote.py](test_engine_remote.py)**: Tests for the Remote API engine.
-- **[test_engine_fast.py](test_engine_fast.py)**: Tests for the Fast (LMDeploy) engine.
-- **[test_factory.py](test_factory.py)**: Tests for the Vieneu factory class.
-- **[test_utils.py](test_utils.py)**: Tests for audio and text processing utilities.
-
----
-
-### Other Utilities
-- **[benchmark.py](benchmark.py)**: RTF and latency benchmarking.
+- **[test_llm_client.py](test_llm_client.py)** — Gemini model resolution/fallback (`voxdirector/llm_client.py`).
+- **[test_punctuation_pauses.py](test_punctuation_pauses.py)** — punctuation → pause-duration table lookup (`pipeline/punctuation_pauses.py`, spec Section 7.3).
+- **[test_audio_postprocess_variable_silence.py](test_audio_postprocess_variable_silence.py)** — per-boundary variable silence concatenation (`pipeline/audio_postprocess.py`, spec Section 7.2).

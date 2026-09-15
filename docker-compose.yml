@@ -4,7 +4,7 @@
 # backend+frontend vao 1 container duy nhat, 3 service rieng qua 1 file
 # compose la du va sach hon.
 #
-# KHONG lien quan toi docker/docker-compose.yml (file do la cho goi SDK rieng
+# KHONG lien quan toi sdk-deploy/docker-compose.yml (file do la cho goi SDK rieng
 # `vieneu` tren PyPI, khong phai VoxDirector - xem ghi chu trong
 # pyproject.toml). File nay danh RIENG cho VoxDirector AI.
 #

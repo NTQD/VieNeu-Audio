@@ -1,4 +1,4 @@
-# Alpha eval set (Phase 1, mục 6 của ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md)
+# Alpha eval set (Phase 1, mục 6 của docs/voxdirector/handoffs/ARCHITECTURE_AND_AGENTS_REVIEW_2026-09-13.md)
 
 Mục đích: trả lời "Agent Alpha thực sự tách chương/nhận diện thể loại/gắn cờ
 cảm xúc-ngắt nghỉ tốt đến đâu" bằng **số đo được**, thay vì "hình như ổn" từ
@@ -12,7 +12,7 @@ kém hơn nhiều) — để dành cho Phase 2-4 của master plan khi cần.
 ## `cases.json` hiện đang RỖNG — đây là việc cần làm, không phải lỗi
 
 File `cases.json` bắt đầu với `"cases": []`. Đây là chủ đích: dự án này có
-nguyên tắc xuyên suốt "không bịa dữ liệu" (xem `PHASE0_HANDOFF.md`, mục 6) —
+nguyên tắc xuyên suốt "không bịa dữ liệu" (xem `docs/voxdirector/handoffs/PHASE0_HANDOFF.md`, mục 6) —
 một "bộ eval" với ranh giới chương/nhãn cảm xúc do AI tự đoán rồi giả vờ là
 đã được con người xác nhận sẽ **tệ hơn** không có eval set nào cả (đo lường
 sai một cách tự tin). Vì vậy Claude sẽ không tự điền case thật vào đây —

@@ -11,7 +11,7 @@ cac doan im lang that trong audio, thay vi doc alignment truc tiep tu model.
 Day la bang chung KHACH QUAN BO SUNG, KHONG thay the viec nguoi dung tu
 nghe that - ket qua cuoi cung van can 1 nguoi nghe thuc te de danh gia.
 
-Chay: backend/.venv/Scripts/python.exe scratch_check/test_vieneu_pause_step5.py
+Chay: backend/.venv/Scripts/python.exe scratch_check/unverified/test_vieneu_pause_step5.py
 """
 import os
 import sys
@@ -20,9 +20,9 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out", "vieneu_step5")
+OUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "out", "vieneu_step5")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # CUNG 1 doan van voi Step 0 cu cua Piper (scratch_check/test_piper_pause_step0.py,

@@ -3,7 +3,7 @@ that su hoat dong: dung dung genre->voice tu config, dung dung version check,
 chap nhan tag cam xuc dang ngoac vuong trong text.
 
 QUAN TRONG: chay bang backend/.venv (isolated), KHONG bang venv chung.
-Chay: backend/.venv/Scripts/python.exe scratch_check/test_vieneu_tts_wrapper.py
+Chay: backend/.venv/Scripts/python.exe scratch_check/verified/test_vieneu_tts_wrapper.py
 """
 import os
 import sys
@@ -11,7 +11,7 @@ import sys
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from voxdirector.config import load_voice_presets
 from pipeline.vieneu_tts import synthesize_to_file, get_sample_rate

@@ -3,7 +3,7 @@ v5 tren van ban mau bao phu CA 4 trach nhiem: (1) chuong, (2) the loai/giong,
 (3) gan co cam xuc, (4) gan co diem can ngat kich tinh dai. Goi Gemini THAT
 (khong mock) - can GEMINI_API_KEY trong bien moi truong.
 
-Chay: python scratch_check/test_alpha_v5.py
+Chay: python scratch_check/verified/test_alpha_v5.py
 """
 import os
 import sys
@@ -12,7 +12,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 # Van ban mau: 2 chuong ro rang (heading "Chuong 1"/"Chuong 2"), tin hieu the
 # loai kiem hiep (kiem, giang ho, mon phai), 1 doan cam xuc ro rang (cuoi -

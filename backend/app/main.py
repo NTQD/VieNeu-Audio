@@ -603,7 +603,7 @@ async def ws_progress(websocket: WebSocket, job_id: str):
             # cua asyncio trong suot thoi gian do, khien uvicorn khong the
             # tra loi WebSocket ping/pong keepalive lan khong gui duoc bat ky
             # progress message nao khac - xac nhan co THAT qua test standalone
-            # 2026-09-10 (scratch_check/test_e2e_real.py): ket noi WS bi chinh
+            # 2026-09-10 (scratch_check/verified/test_e2e_real.py): ket noi WS bi chinh
             # server dong voi loi "1011 internal error keepalive ping timeout"
             # giua chung, KHONG phai loi cua client. asyncio.to_thread() chay
             # ham dong bo tren 1 thread rieng, tra quyen dieu khien lai cho

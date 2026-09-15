@@ -1,7 +1,7 @@
 """Step 2 cua yeu cau doi engine (2026-09-11) - kiem tra co ban VieNeu-TTS
 qua duong dan CPU/ONNX toi thieu (torch-free), theo dung README chinh thuc.
 
-Chay: python scratch_check/test_vieneu_basic.py
+Chay: python scratch_check/verified/test_vieneu_basic.py
 """
 import sys
 import time
