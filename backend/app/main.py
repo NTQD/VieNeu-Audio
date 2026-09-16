@@ -482,7 +482,16 @@ def get_subtitles(job_id: str):
     job = JOBS.get(job_id)
     if not job or not job.get("final_srt_path"):
         raise HTTPException(status_code=404, detail="Phụ đề chưa sẵn sàng hoặc job_id không tồn tại")
-    return FileResponse(job["final_srt_path"], media_type="text/plain")
+    # KHAC voi audio/video (co xem truoc inline tren trang nen KHONG duoc ep
+    # tai xuong) - phu de KHONG co UI xem truoc nao ca, chi co 1 muc dich
+    # DUY NHAT la tai ve dung voi trinh phat video ngoai. Thieu "filename="
+    # o day (xac nhan qua doc code) khien Starlette KHONG gui header
+    # Content-Disposition: attachment - trinh duyet nhan Content-Type:
+    # text/plain roi tu mo thanh 1 trang xem chu thay vi hoi luu file, dung
+    # y bao cao that cua nguoi dung (2026-09-16).
+    return FileResponse(
+        job["final_srt_path"], media_type="text/plain", filename=f"voxdirector_{job_id}.srt"
+    )
 
 
 STAGES = [
